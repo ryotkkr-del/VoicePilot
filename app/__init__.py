@@ -1,0 +1,1 @@
+"""VoicePilot: a local-first Windows voice computer controller."""
