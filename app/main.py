@@ -24,6 +24,7 @@ from .ux import presentation, meter_level, friendly_error
 from .ui_dispatch import UIDispatcher
 from .voice_feedback import SpeechFeedback, result_announcement
 from .chatgpt_handoff import extract_chatgpt_request, prepare_chatgpt_handoff
+from .dictation import DictationController, dictation_intent, DictationError, DictationTarget
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "VoicePilot"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -87,6 +88,8 @@ class VoicePilotApp:
         self.recognizer: SpeechRecognizer | None = None
         self._last_transcription_finished = 0.0
         self.windows = WindowsController()
+        self.dictation = DictationController(self.windows, self.bridge)
+        self.dictation_target: DictationTarget | None = None
         self.session = {"recent_instructions": [], "recent_files": []}  # RAM only; never written to disk
         self.recording = False
         self.busy = False
@@ -169,6 +172,8 @@ class VoicePilotApp:
         row.pack(fill="x")
         self.rec_button = self.button(row,"●  話す",self.toggle_record,True)
         self.rec_button.pack(side="left")
+        self.dictation_button = self.button(row, "文章入力", self.toggle_dictation)
+        self.dictation_button.pack(side="left", padx=(6,0))
         self.status_label = tk.Label(row,text="準備完了",font=(FONT,10),bg=WHITE,fg=MUTED)
         self.status_label.pack(side="left",padx=12)
         self.record_meter = tk.Frame(talk, bg=WHITE)
@@ -472,11 +477,18 @@ class VoicePilotApp:
         can_interrupt = self.busy and not recording
         can_speak = p.can_record or recording or can_interrupt
         self.rec_button.configure(state="normal" if can_speak else "disabled")
-        self.abort_button.configure(state="normal" if p.can_stop else "disabled")
+        self.abort_button.configure(state="normal" if p.can_stop or self.dictation_target else "disabled")
+        self.dictation_button.configure(
+            text="入力終了" if self.dictation_target else "文章入力",
+            state="disabled" if self.busy or recording else "normal")
         # Disable actions that would otherwise silently be ignored while busy.
         entry_action_state = "disabled" if self.busy or recording else "normal"
-        self.send_button.configure(state=entry_action_state)
+        self.send_button.configure(state=entry_action_state, text="入力" if self.dictation_target else "実行")
         self.chatgpt_button.configure(state=entry_action_state)
+        if self.dictation_target and not self.busy and not recording:
+            hint = "文章入力中：Ctrl+Alt+Spaceで話す／「入力終了」で解除"
+            self.status_label.configure(text="文章入力モード", fg=ACCENT)
+            self.status_hint.configure(text=hint)
         if self._record_after_cancel:
             hint = "現在の操作を止めたあと、録音を開始します"
             self.status_hint.configure(text=hint)
@@ -620,6 +632,7 @@ class VoicePilotApp:
         finish_stage="error"
         finish_detail=None
         verified_action=None
+        is_dictation=False
         try:
             model=runtime["whisper_model"]
             if self.recognizer is None or self.recognizer.model_name!=model:
@@ -633,9 +646,15 @@ class VoicePilotApp:
                 self.log("音声を認識できませんでした。もう一度試してください")
                 finish_stage="no_speech"
                 return
-            self.show_transcript(command)
-            self.log(f"あなた：{command}")
-            outcome=self._run_agent(command,runtime)
+            is_dictation = self.dictation_target is not None or dictation_intent(command, False) is not None
+            if is_dictation:
+                self.log("音声タイピング：入力モードの指示を認識しました" if not self.dictation_target
+                         else "音声タイピング：認識結果を処理しています（本文はログに残しません）")
+                outcome = self._run_dictation_command(command)
+            else:
+                self.show_transcript(command)
+                self.log(f"あなた：{command}")
+                outcome=self._run_agent(command,runtime)
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             verified_action=outcome.verified_action if finish_stage == "completed" else None
             if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard"}:
@@ -647,7 +666,75 @@ class VoicePilotApp:
         finally:
             self._last_transcription_finished = time.monotonic()
             self.mark_idle(finish_stage, finish_detail)
-            self._speak_result(finish_stage, verified_action)
+            if not is_dictation:
+                self._speak_result(finish_stage, verified_action)
+
+    def toggle_dictation(self):
+        """Explicit UI toggle, never an implicit mode switch by page content."""
+        if self.busy or self.recording:
+            return
+        if self.dictation_target is not None:
+            self.dictation_target = None
+            self.log("文章入力モードを終了しました")
+            self._apply_phase()
+            return
+        self.busy = True
+        self.stop_event.clear()
+        self.set_phase("acting")
+        threading.Thread(target=self._start_dictation_worker, daemon=True).start()
+
+    def _start_dictation_worker(self):
+        status, detail = "completed", None
+        try:
+            outcome = self._run_dictation_command("文章入力開始")
+            status = outcome.status
+            if status != "completed":
+                detail = outcome.summary
+        except Exception as exc:
+            status, detail = "error", str(exc)[:150]
+            self.log(detail)
+        finally:
+            self.mark_idle(status, detail)
+
+    def _run_dictation_command(self, command: str) -> RunOutcome:
+        try:
+            intent = dictation_intent(command, self.dictation_target is not None)
+            if intent is None:
+                return RunOutcome("incomplete", "文章入力の指示を認識できませんでした")
+            action, text = intent
+            if action == "start":
+                self.restore_target()
+                self.dictation_target = self.dictation.start()
+                self.log("文章入力モード開始。入力欄を固定しました。Ctrl+Alt+Spaceで話してください")
+                return RunOutcome("completed", "文章入力モードを開始しました")
+            if action == "stop":
+                self.dictation_target = None
+                self.log("文章入力モードを終了しました")
+                return RunOutcome("completed", "文章入力モードを終了しました")
+            if action == "already_on":
+                return RunOutcome("completed", "文章入力モードは有効です")
+            if action == "empty":
+                return RunOutcome("no_speech", "入力する内容がありません")
+            if self.stop_event.is_set():
+                return RunOutcome("interrupted", "入力を中止しました")
+            self.restore_target()
+            verified = self.dictation.insert(self.dictation_target, text)
+            # Never log dictated text, private labels, or current editor contents.
+            self.log(f"文章入力：{len(text)}文字を挿入しました（内容は記録しません）")
+            return RunOutcome("completed" if verified else "unverified",
+                              "入力位置へ追記しました" if verified else
+                              "文字入力を送信しました。内容は入力先で確認してください")
+        except (DictationError, ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:
+            self.log(f"文章入力を停止しました：{str(exc)[:130]}")
+            # A changed focus must never silently retarget a different editor.
+            self.dictation_target = None
+            return RunOutcome("incomplete", str(exc)[:180])
+        except Exception as exc:
+            # An unexpected accessibility/COM error must never switch to blind
+            # typing. Do not echo raw exception values that may contain input.
+            self.dictation_target = None
+            self.log(f"文章入力を停止しました：対象を確認できません（{type(exc).__name__}）")
+            return RunOutcome("incomplete", "入力先を安全に確認できませんでした。入力モードを開始し直してください")
 
     def send_text(self):
         if self.busy or self.recording:return
@@ -658,7 +745,10 @@ class VoicePilotApp:
         self.busy=True
         self.stop_event.clear()
         runtime=self.runtime_settings()
-        self.log(f"あなた：{command}")
+        if self.dictation_target or dictation_intent(command, False):
+            self.log("文章入力：文字列はログに保存しません")
+        else:
+            self.log(f"あなた：{command}")
         self.set_phase("acting")
         threading.Thread(target=self.run_text_task,args=(command,runtime),daemon=True).start()
 
@@ -707,7 +797,10 @@ class VoicePilotApp:
         finish_stage="error"
         finish_detail=None
         try:
-            outcome=self._run_chatgpt(command) if force_chatgpt else self._run_agent(command,runtime)
+            outcome = (self._run_chatgpt(command) if force_chatgpt else
+                       self._run_dictation_command(command) if
+                       self.dictation_target or dictation_intent(command, False) else
+                       self._run_agent(command, runtime))
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard"}:
                 finish_detail=outcome.summary
@@ -773,8 +866,14 @@ class VoicePilotApp:
         if not keep_record_request:
             self._record_after_cancel = False
         if not self.busy and not self.recording:
+            if getattr(self, "dictation_target", None) is not None:
+                self.dictation_target = None
+                self._apply_phase()
+                self.log("文章入力モードを終了しました")
             return
         self.stop_event.set()
+        if not keep_record_request and getattr(self, "dictation_target", None) is not None:
+            self.dictation_target = None
         if self.recording:
             self._stop_record(discard=True)
             return
@@ -783,6 +882,7 @@ class VoicePilotApp:
 
     def close(self):
         self._record_after_cancel = False
+        self.dictation_target = None
         self.speaker.close()
         self.stop_event.set()
         if self.recording:self._stop_record(discard=True)

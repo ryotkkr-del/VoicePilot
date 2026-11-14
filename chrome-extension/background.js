@@ -164,6 +164,66 @@ function pageOperation(operation, params) {
       throw new Error('操作対象が別の画面要素で隠れています。画面を再確認してください');
     }
   }
+  // Dictation is a separate opt-in route: pin the *focused* editor, not a
+  // snapshot label. This private token stays in the extension's isolated world.
+  function focusedDictationEditor() {
+    const focused = document.activeElement;
+    if (!focused) throw new Error('入力欄にカーソルを置いてください');
+    const el = focused.isContentEditable
+      ? (focused.closest?.('[contenteditable="true"]') || focused)
+      : focused;
+    const kind = el.tagName;
+    const inputType = (el.getAttribute?.('type') || 'text').toLowerCase();
+    if (!(el.isContentEditable || kind === 'TEXTAREA' ||
+          (kind === 'INPUT' && ['text','search','email','url','tel'].includes(inputType)))) {
+      throw new Error('文字入力可能な欄にカーソルを置いてください');
+    }
+    if (sensitive(el) || el.disabled || el.readOnly || el.getAttribute?.('aria-readonly') === 'true' ||
+        el.closest?.('[inert],[aria-hidden="true"]')) {
+      throw new Error('機密情報欄・読み取り専用欄には入力できません');
+    }
+    if (!visible(el)) throw new Error('入力欄が画面に表示されていません');
+    return el;
+  }
+  if (operation === 'dictation_probe') {
+    const el = focusedDictationEditor();
+    const token = crypto.randomUUID();
+    window.__voicepilotDictationTarget = {element:el, token, page:location.href};
+    return {token};  // No editor text or page contents leave Chrome.
+  }
+  if (operation === 'dictation_insert') {
+    const text = params.text;
+    if (typeof text !== 'string' || !text || text.length > 2000 ||
+        /[\x00-\x09\x0b-\x1f\x7f]/.test(text)) throw new Error('入力文字が不正です');
+    const state = window.__voicepilotDictationTarget;
+    const el = focusedDictationEditor();
+    if (!state || state.token !== params.token || state.element !== el || state.page !== location.href)
+      throw new Error('ページか入力欄が変わりました。文章入力モードを開始し直してください');
+    if (el.isContentEditable) {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0 || !selection.isCollapsed ||
+          !el.contains(selection.anchorNode))
+        throw new Error('カーソル位置を確認できません。文章の選択を解除してください');
+      // execCommand inserts at the caret, preserving the existing rich text.
+      // Never replace textContent wholesale if the editor rejects it.
+      const command = text === '\n' ? 'insertLineBreak' : 'insertText';
+      if (!document.execCommand(command, false, command === 'insertText' ? text : null))
+        throw new Error('この入力欄は音声タイピングに対応していません');
+      return {inserted:true, verified:false}; // Rich editors can transform text.
+    }
+    if (typeof el.selectionStart !== 'number' || typeof el.selectionEnd !== 'number' ||
+        el.selectionStart !== el.selectionEnd)
+      throw new Error('選択中の文章を上書きしません。選択を解除してください');
+    if (el.tagName === 'INPUT' && text.includes('\n'))
+      throw new Error('この入力欄での改行は送信になるおそれがあるため禁止しています');
+    if (typeof el.setRangeText !== 'function')
+      throw new Error('この入力欄への追記に対応していません');
+    const caret = el.selectionStart;
+    // setRangeText performs insertion without simulating Enter or submit.
+    el.setRangeText(text, caret, caret, 'end');
+    el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
+    return {inserted:true, verified:el.value.slice(caret, caret+text.length) === text};
+  }
   if (operation === 'snapshot') {
     const list = candidates().slice(0, 220);
     const ranked = [...list.filter(visible), ...list.filter(el => !visible(el))].slice(0, 110);
@@ -348,6 +408,20 @@ async function perform(action, args) {
     return {scheduled:true};
   }
   if (action === 'chatgpt_prepare') return chatgptPrepare(args.prompt);
+  if (action === 'dictation_probe') {
+    const tab = await activeTab();
+    const probe = await inject(tab.id, 'dictation_probe', {});
+    if (typeof probe.token !== 'string' || !probe.token) throw new Error('入力欄を確認できませんでした');
+    return {token:probe.token, tab_id:tab.id};
+  }
+  if (action === 'dictation_insert') {
+    const tab = await activeTab();
+    if (tab.id !== args.tab_id || typeof args.token !== 'string')
+      throw new Error('タブが変わりました。文章入力を開始し直してください');
+    if (typeof args.text !== 'string' || !args.text || args.text.length > 2000)
+      throw new Error('入力する文字数を確認してください');
+    return inject(tab.id, 'dictation_insert', {token:args.token, text:args.text});
+  }
   if (action === 'snapshot') {
     const tab = await activeTab();
     const tabs = (await chrome.tabs.query({currentWindow:true})).slice(0,24)

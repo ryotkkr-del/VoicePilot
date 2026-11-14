@@ -169,6 +169,120 @@ class WindowsController:
             ctypes.windll.user32.ShowWindow(hwnd, 9)  # Restore only minimized windows.
         return bool(ctypes.windll.user32.SetForegroundWindow(hwnd))
 
+    def _dictation_focus(self) -> tuple[str, str]:
+        """Return focused editor identity without reading its value or text.
+
+        This uses UI Automation's focused *control*, rather than a broad UI tree
+        or a best-guess field based on the current window title. Never fall back
+        to blind keyboard typing if UIA cannot identify an editable control.
+        """
+        self._ensure_not_terminal()
+        import pythoncom
+        pythoncom.CoInitialize()
+        try:
+            from pywinauto.uia_element_info import UIAElementInfo
+            focused = UIAElementInfo.get_active()
+            if focused is None:
+                raise ValueError("現在の入力欄を検出できません")
+            control_type = str(focused.control_type or "")
+            if control_type not in {"Edit", "Document"}:
+                raise ValueError("テキスト入力欄にカーソルを置いてください")
+            element = focused.element
+            if bool(element.CurrentIsPassword):
+                raise ValueError("パスワード欄には音声入力できません")
+            if not bool(element.CurrentIsEnabled) or bool(element.CurrentIsOffscreen):
+                raise ValueError("入力欄が利用できません")
+            if not bool(element.CurrentIsKeyboardFocusable):
+                raise ValueError("キーボード入力できない欄です")
+            # An accessibility name sometimes encodes a credential field label.
+            if SENSITIVE_CONTROL.search(str(focused.name or "")[:150]):
+                raise ValueError("機密情報の入力欄は利用できません")
+            # ValuePattern is optional (notably on Office/VS Code Documents).
+            from pywinauto.windows.uia_defines import IUIA
+            i = IUIA()
+            try:
+                value_pattern = element.GetCurrentPattern(i.UIA_dll.UIA_ValuePatternId)
+                if value_pattern is not None:
+                    iface = value_pattern.QueryInterface(i.ui_automation_client.IUIAutomationValuePattern)
+                    if bool(iface.CurrentIsReadOnly):
+                        raise ValueError("読み取り専用の入力欄です")
+            except ValueError:
+                raise
+            except Exception:
+                pass  # Not all editors support the ValuePattern.
+            # Prevent replacing selected text. Try UIA TextPattern selection,
+            # then classic Win32 EM_GETSEL. An unknown selection fails closed.
+            selection_checked = False
+            try:
+                text_pattern = element.GetCurrentPattern(i.UIA_dll.UIA_TextPatternId)
+                if text_pattern is not None:
+                    pattern = text_pattern.QueryInterface(i.ui_automation_client.IUIAutomationTextPattern)
+                    ranges = pattern.GetSelection()
+                    if ranges is not None and ranges.Length > 0:
+                        for index in range(ranges.Length):
+                            selected = ranges.GetElement(index)
+                            if selected.CompareEndpoints(0, selected, 1) != 0:
+                                raise ValueError("選択された文章の上書きは許可していません")
+                        selection_checked = True
+            except ValueError:
+                raise
+            except Exception:
+                pass
+            if not selection_checked:
+                try:
+                    hwnd = int(focused.handle or 0)
+                    buf = ctypes.create_unicode_buffer(100)
+                    user32 = ctypes.windll.user32
+                    user32.GetClassNameW.argtypes = (wintypes.HWND, wintypes.LPWSTR, ctypes.c_int)
+                    user32.GetClassNameW.restype = ctypes.c_int
+                    if hwnd and user32.GetClassNameW(hwnd, buf, len(buf)):
+                        klass = buf.value.lower()
+                        if klass.startswith(('edit', 'richedit')):
+                            start, end = wintypes.DWORD(), wintypes.DWORD()
+                            user32.SendMessageW.argtypes = (
+                                wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM)
+                            user32.SendMessageW.restype = wintypes.LPARAM
+                            user32.SendMessageW(
+                                hwnd, 0x00B0, ctypes.addressof(start), ctypes.addressof(end))
+                            if start.value != end.value:
+                                raise ValueError("選択された文章の上書きは許可していません")
+                            selection_checked = True
+                except ValueError:
+                    raise
+                except Exception:
+                    pass
+            if not selection_checked:
+                raise ValueError("このアプリではカーソル位置を安全に確認できません")
+            runtime_id = tuple(int(v) for v in element.GetRuntimeId())
+            if not runtime_id:
+                raise ValueError("入力欄を識別できません")
+            return (control_type, ",".join(map(str, runtime_id)))
+        finally:
+            pythoncom.CoUninitialize()
+
+    def dictation_probe(self) -> str:
+        control_type, identity = self._dictation_focus()
+        return control_type + ":" + identity
+
+    def dictation_insert(self, text: str, expected: str) -> None:
+        """Write literal Unicode at the caret without interpreting hotkey syntax."""
+        from .dictation import DictationError, MAX_CHARS
+        if (not isinstance(text, str) or not 0 < len(text) <= MAX_CHARS or
+                any(ord(c) < 32 and c != "\n" for c in text)):
+            raise DictationError("入力できない文字が含まれています")
+        current = self.dictation_probe()
+        if current != expected:
+            raise DictationError("入力欄が変わりました。入力モードを開始し直してください")
+        # Enter can submit messages in many desktop applications. Only permit
+        # a newline in a UIA Document (rich editor), never a generic Edit field.
+        if "\n" in text and not expected.startswith("Document:"):
+            raise DictationError("この入力欄では改行の安全性を確認できません。文章入力を続ける前に入力先を確認してください")
+        _send_literal_unicode(text, on_chunk=lambda: self._dictation_check(expected))
+
+    def _dictation_check(self, expected: str) -> None:
+        if self.dictation_probe() != expected:
+            raise ValueError("入力中にフォーカスが変わりました。入力を中断します")
+
     def inspect_point(self, x: int, y: int) -> dict:
         """Identify the real UIA control under a visual click when possible."""
         self._ensure_not_terminal()
@@ -564,3 +678,57 @@ def rename_file(path: str, new_name: str) -> str:
         raise FileExistsError("同じ名前のファイルがあるため上書きしません")
     source.rename(dest)
     return f"{source.name} を {dest.name} に変更しました"
+
+
+# A dedicated literal-text path: pywinauto.send_keys uses ^/+/%%/{...} as
+# shortcuts. Dictation must never interpret words like ^s or {ENTER} as keys.
+def _send_literal_unicode(text: str, on_chunk=None) -> None:
+    if os.name != "nt":
+        raise RuntimeError("Windows専用の入力機能です")
+    user32 = ctypes.windll.user32
+    ULONG_PTR = ctypes.c_size_t
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD),
+                    ("dwFlags", wintypes.DWORD), ("time", wintypes.DWORD),
+                    ("dwExtraInfo", ULONG_PTR)]
+
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [("dx", wintypes.LONG), ("dy", wintypes.LONG),
+                    ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ULONG_PTR)]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [("uMsg", wintypes.DWORD), ("wParamL", wintypes.WORD),
+                    ("wParamH", wintypes.WORD)]
+
+    class INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT), ("hi", HARDWAREINPUT)]
+
+    class INPUT(ctypes.Structure):
+        _fields_ = [("type", wintypes.DWORD), ("data", INPUT_UNION)]
+
+    user32.SendInput.argtypes = (wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
+    user32.SendInput.restype = wintypes.UINT
+
+    # Don't use simulated clipboard paste: it could overwrite the user's
+    # clipboard or leak confidential content into another application.
+    encoded = text.encode("utf-16-le")
+    units = [int.from_bytes(encoded[i:i+2], "little")
+             for i in range(0, len(encoded), 2)]
+    for offset in range(0, len(units), 64):
+        if on_chunk is not None:
+            on_chunk()
+        chunk = units[offset:offset + 64]
+        events = []
+        for code in chunk:
+            # VK_RETURN only for explicitly allowed Document editors.
+            # For all other characters use KEYEVENTF_UNICODE (literal WM_CHAR).
+            is_enter = code == 10
+            for released in (False, True):
+                flags = (0 if is_enter else 0x0004) | (0x0002 if released else 0)
+                events.append(INPUT(1, INPUT_UNION(ki=KEYBDINPUT(13 if is_enter else 0,
+                                                               0 if is_enter else code, flags, 0, 0))))
+        arr = (INPUT * len(events))(*events)
+        if user32.SendInput(len(events), arr, ctypes.sizeof(INPUT)) != len(events):
+            raise RuntimeError("Windowsが文字入力を受け付けませんでした")

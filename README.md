@@ -13,6 +13,13 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 - Optional Ollama (local) / Gemini (free-tier limits apply) for planning
 - Optional ChatGPT Web handoff **for drafting only**; it does not send messages automatically or use Codex/Work
 - Action confirmations, cancellation, and limited voice feedback
+- **v0.17: explicit voice dictation mode** — place the caret in a supported editor, click "文章入力" or say "文章入力を始めて", then dictate via Ctrl+Alt+Space. Only the selected editor receives literal text. Say "入力終了" to quit. No AI API is used for dictation.
+
+## Voice typing (v0.17)
+
+Focus a text field in Chrome (with the extension connected), or a supported Windows UI Automation text control in Word/VS Code/Notepad. Start **文章入力**, speak one phrase at a time using `Ctrl + Alt + Space`, then end with **入力終了**. Standalone "改行", "句点", "読点", "スペース" are formatting commands. This version is **not** an always-listening microphone; that is planned for v0.18.
+
+The insertion path never clears existing editor content, does not simulate paste or hotkeys, does not automatically submit forms, and refuses to change input target. It checks common sensitive fields. Rich editors and apps that hide the caret from accessibility APIs may reject dictation; test on non-sensitive documents first. Windows UI Automation control insertion has not been validated on a physical Windows PC.
 
 ## Getting started (Windows 11)
 
