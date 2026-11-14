@@ -82,6 +82,7 @@ class VoicePilotApp:
         self.config = load_config()
         self.bridge = BrowserBridge(self.config["token"])
         self.bridge.start()
+        self._extension_version_checked = False
         self.mic = Microphone()
         self.recognizer: SpeechRecognizer | None = None
         self._last_transcription_finished = 0.0
@@ -104,6 +105,8 @@ class VoicePilotApp:
         self.root.after(500, self.track_foreground)
         self.root.after(700, self.refresh_connection)
         self.root.after(10_000, self.release_idle_model)
+        # Check stable GitHub Releases in the background; no GUI or LLM overhead.
+        self.root.after(12_000, self._start_update_check)
         if sys.platform == "win32":
             register_windows_hotkey(
                 lambda: self.ui.post(self.toggle_record),
@@ -394,11 +397,46 @@ class VoicePilotApp:
                             "voice_feedback":self.voice_feedback.get()})
         save_config(self.config)
 
+    def _start_update_check(self):
+        def work():
+            try:
+                from voicepilot_bootstrap import check_and_stage, UpdateError
+                status = check_and_stage(Path(__file__).resolve().parent.parent)
+                if status == "downloaded":
+                    self.log("新しいVoicePilotを安全に保存しました。次回起動時に自動更新されます。")
+                elif status == "staged":
+                    self.log("更新が準備されています。次回起動時に適用します。")
+            except Exception as exc:
+                # An update outage should never stop desktop control or spam popups.
+                self.log("更新の確認を保留しました（通常のPC操作は利用できます）。" + str(exc)[:90])
+        threading.Thread(target=work, daemon=True, name="voicepilot-update-check").start()
+        try:
+            self.root.after(6 * 60 * 60 * 1000, self._start_update_check)
+        except tk.TclError:
+            pass
+
+    def _check_extension_compatibility(self):
+        """One best-effort reconnect, never interrupt an active user action."""
+        try:
+            from voicepilot_bootstrap import app_version
+            expected = app_version(Path(__file__).resolve().parent.parent)
+            data = self.bridge.call("extension_version", {}, timeout=5)
+            observed = data.get("version") if isinstance(data, dict) else None
+            if observed and observed != expected:
+                self.log("Chrome拡張の更新を反映しています。うまくいかなければ拡張機能を再読み込みしてください。")
+                self.bridge.call("extension_reload", {}, timeout=5)
+        except Exception:
+            self.log("Chrome拡張の更新確認はできませんでした。操作できない場合は拡張機能を再読み込みしてください。")
+
     def refresh_connection(self):
         if self.bridge.error:
             self.conn_label.configure(text="● Chrome接続エラー",fg="#B91C1C")
         elif self.bridge.connected:
             self.conn_label.configure(text="● Chrome接続中",fg="#15803D")
+            if not getattr(self, "_extension_version_checked", True):
+                self._extension_version_checked = True
+                threading.Thread(target=self._check_extension_compatibility,
+                                 daemon=True, name="voicepilot-extension-compat").start()
         else:
             self.conn_label.configure(text="○ Chrome拡張なし（PC操作可）",fg=MUTED)
         self.root.after(2500,self.refresh_connection)

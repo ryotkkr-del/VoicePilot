@@ -26,3 +26,7 @@ settings.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Built release artifacts and generated update status
+dist/
+*.zip

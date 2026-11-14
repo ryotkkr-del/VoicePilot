@@ -342,6 +342,11 @@ async function chatgptPrepare(prompt) {
 }
 
 async function perform(action, args) {
+  if (action === 'extension_version') return {version: chrome.runtime.getManifest().version};
+  if (action === 'extension_reload') {
+    setTimeout(() => chrome.runtime.reload(), 350);
+    return {scheduled:true};
+  }
   if (action === 'chatgpt_prepare') return chatgptPrepare(args.prompt);
   if (action === 'snapshot') {
     const tab = await activeTab();
