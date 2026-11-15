@@ -80,13 +80,14 @@ class VoiceAgent:
             try:
                 context["browser"] = self.bridge.call("snapshot")
             except Exception as e:
-                context["browser_error"] = str(e)[:150]
+                # Browser errors can contain page-controlled private text.
+                context["browser_error"] = "Chromeの画面情報を取得できませんでした"
         try:
             if hasattr(self.windows, "allow_chrome_uia_fallback"):
                 self.windows.allow_chrome_uia_fallback = not isinstance(context.get("browser"), dict)
             context["windows"] = self.windows.snapshot()
         except Exception as e:
-            context["windows_error"] = str(e)[:150]
+            context["windows_error"] = "Windows画面の情報を取得できませんでした"
         context["task_memory"] = task_context(
             self.session, (context.get("windows") or {}).get("active_title", ""),
             browser=context.get("browser"), windows=context.get("windows"))
@@ -356,7 +357,7 @@ class VoiceAgent:
             self._fast_outcome = self._finish(status, evidence.reason,
                                              verified_action=action if status == "completed" else None)
         except Exception as exc:
-            self._fast_outcome = self._finish("incomplete", "操作対象が変わったため中止しました: " + str(exc)[:100])
+            self._fast_outcome = self._finish("incomplete", "操作対象を安全に確認できないため中止しました")
         return True
 
     def _plan_checked(self, instruction: str, context: dict,
@@ -439,11 +440,8 @@ class VoiceAgent:
                 if completed_steps == 0:
                     # Preserve a useful clarification from the planner.  It is only
                     # displayed as text, never used as an executable instruction.
-                    reason = message.strip()[:180]
-                    if not reason or any(word in reason for word in
-                                         ("完了しました", "実行しました", "成功しました")):
-                        reason = "指示を確認してください"
-                    return self._finish("incomplete", "操作は実行されませんでした。" + reason)
+                    # Untrusted model text may quote a secret from the page.
+                    return self._finish("incomplete", "操作は実行されませんでした。指示を確認してください")
                 if any("error" in step for step in history):
                     return self._finish("incomplete", "一部の操作でエラーがありました。操作ログを確認してください")
                 if any(step.get("verification") != "verified" for step in history):
@@ -485,8 +483,9 @@ class VoiceAgent:
             signatures[key] = signatures.get(key, 0) + 1
             if signatures[key] >= 3:
                 return self._finish("incomplete", "同じ操作の繰り返しを検出したため停止しました")
-            self.log(f"{index + 1}/{self.max_steps}  {action}" if self.autonomous
-                     else f"{index + 1}/{self.max_steps}  {message or action}")
+            # Do not print model-generated explanations: they can reflect
+            # sensitive text from webpages, user prompts or windows.
+            self.log(f"{index + 1}/{self.max_steps}  {action}")
             try:
                 if self.autonomous and action in EFFECTFUL_ACTIONS:
                     if effect_count >= self.limits.max_effects:
@@ -552,7 +551,9 @@ class VoiceAgent:
                             evidence = Evidence("verified", "画面遷移を改めて確認しました")
                     except Exception:
                         pass
-                history.append({"action": action, "args": args, "result": str(result)[:800],
+                # Raw tool responses may contain page text or file names.
+                # Next-step planning needs the status, not raw tool output.
+                history.append({"action": action, "args": args,
                                 "verification": evidence.status})
                 remember_step(self.session, action, args, context, evidence.status)
                 completed_steps += 1
@@ -574,10 +575,20 @@ class VoiceAgent:
             except Exception as e:
                 if self.stop_event.is_set():
                     return self._finish("interrupted", "操作を中止しました。直前の操作は実行された可能性があります")
-                self.log(f"操作エラー: {type(e).__name__}" if self.autonomous else f"操作エラー: {e}")
-                history.append({"action": action, "args": args, "error": str(e)[:200]})
-                if self.autonomous:
-                    return self._finish("incomplete", "操作の失敗が確認されたため、自律作業を安全停止しました")
+                # Never log or re-send remote exception text as it may echo
+                # private browser fields or credentials.
+                self.log(f"操作エラー（{type(e).__name__}）")
+                history.append({"action": action, "error": type(e).__name__})
+                if action in EFFECTFUL_ACTIONS:
+                    # Connection loss and timeouts may occur *after* a remote
+                    # operation has committed. Never plan another side effect
+                    # when its completion is unknown (in either task mode).
+                    if isinstance(e, (ValueError, PermissionError)):
+                        return self._finish("incomplete", "操作を安全に実行できなかったため停止しました")
+                    return self._finish(
+                        "unverified",
+                        "操作結果が不明なため停止しました。再実行せず、画面を確認してください",
+                    )
                 if sum("error" in h for h in history) >= 3:
                     return self._finish("error", "連続エラーのため停止しました")
         return self._finish("incomplete", "操作数の上限に達したため停止しました。続きを指示してください。")
