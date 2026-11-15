@@ -132,7 +132,7 @@ def _safe_name(name: str) -> str:
     # extraction, so nothing can alias or redirect a release file.
     for part in path.parts:
         if (part.endswith((" ", ".")) or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
-                or re.fullmatch(r"(?i)(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?", part)):
+                or re.fullmatch(r"(?i)(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)):
             raise UpdateError("Windowsで安全に扱えない更新パスです")
     if not (name in _ALLOWED_FILES or name.startswith(_ALLOWED_DIRS)):
         raise UpdateError(f"未許可の更新ファイルです: {name[:80]}")
