@@ -151,6 +151,7 @@ class OptionalMicrophoneTests(unittest.TestCase):
         with patch.object(diag.os, "name", "nt"), \
              patch.object(diag.win, "current_process_elevated", return_value=False), \
              patch("builtins.input", return_value="no"), \
+             patch("builtins.print"), \
              patch("app.audio.Microphone") as mic:
             outcome = diag.interactive_microphone()
         self.assertEqual(outcome, "SKIP:no consent")
