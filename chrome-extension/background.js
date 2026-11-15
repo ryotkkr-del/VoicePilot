@@ -63,7 +63,8 @@ function pageOperation(operation, params) {
   const selector = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="tab"],[role="menuitem"],[role="checkbox"],[contenteditable="true"],[tabindex]';
   // Recheck in the tab's own execution world, right before any page mutation.
   // Python's foreground check can go stale while a WebSocket request travels.
-  if (['browser_click', 'browser_fill', 'browser_scroll', 'dictation_insert'].includes(operation)) {
+  if (['snapshot', 'read_visible', 'dictation_probe', 'dictation_insert',
+       'browser_click', 'browser_fill', 'browser_scroll'].includes(operation)) {
     if ((typeof document.hasFocus === 'function' && !document.hasFocus()) ||
         (typeof document.visibilityState === 'string' && document.visibilityState !== 'visible')) {
       throw new Error('対象のタブが前面ではありません。操作前に画面を再確認してください');
@@ -362,7 +363,8 @@ function pageOperation(operation, params) {
 async function inject(tabId, operation, args) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !/^https?:\/\//.test(tab.url)) throw new Error('Chrome内部ページや特殊なタブは操作できません');
-  if (['browser_click', 'browser_fill', 'browser_scroll', 'dictation_insert'].includes(operation)) {
+  if (['snapshot', 'read_visible', 'dictation_probe', 'dictation_insert',
+       'browser_click', 'browser_fill', 'browser_scroll'].includes(operation)) {
     // An unrelated tab/window can gain focus between activeTab() and inject().
     // Do not send the pending mutation to a now-background tab.
     const now = await activeTab();
