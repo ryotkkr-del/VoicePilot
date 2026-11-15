@@ -25,6 +25,28 @@ from .task_policy import LongTaskLimits, TaskProgress, EFFECTFUL_ACTIONS, requir
 # An LLM decision or approval dialog can outlive the original target.
 FOREGROUND_BOUND = frozenset({"windows_hotkey", "windows_scroll", "windows_type"})
 
+
+class TargetChangedError(RuntimeError):
+    """A pre-dispatch target mismatch: the side effect was never attempted."""
+
+
+def safe_clarification(message: str) -> str:
+    """Return a canned useful question, never arbitrary LLM/page-derived text.
+
+    The model may suggest which category is ambiguous but cannot place secret
+    content or a forged authority statement into the operation log.
+    """
+    value = message.casefold()
+    if "どちらのファイル" in value or "どのファイル" in value:
+        return "どちらのファイルを操作しますか？"
+    if "どのアプリ" in value or "どちらのアプリ" in value:
+        return "どのアプリですか？"
+    if "どのウィンドウ" in value or "どちらのウィンドウ" in value:
+        return "どのウィンドウですか？"
+    if "どのボタン" in value or "どちらのボタン" in value:
+        return "どのボタンですか？"
+    return "指示を確認してください"
+
 NON_REPEATABLE = frozenset({
     "browser_click", "browser_fill", "windows_click", "windows_fill",
     "windows_type", "screen_click", "screen_double_click",
@@ -180,14 +202,14 @@ class VoiceAgent:
             # Recheck at the very last dispatch boundary. Checking only before
             # the confirmation dialog is insufficient: focus may have changed.
             if self.windows.foreground_hwnd() != self._expected_input_hwnd:
-                raise RuntimeError("操作するウィンドウが変わったため入力を中止しました")
+                raise TargetChangedError("操作するウィンドウが変わったため入力を中止しました")
         if action in {"screen_click", "screen_double_click", "screen_drag"}:
             if self._frame is None:
                 raise ValueError("画像がありません")
             if time.monotonic() - self._frame.captured_at > 12:
                 raise RuntimeError("画像が古くなりました。もう一度観測してください")
             if self.windows.foreground_hwnd() != self._frame.active_hwnd:
-                raise RuntimeError("画面が切り替わったためクリックを中止しました")
+                raise TargetChangedError("画面が切り替わったためクリックを中止しました")
             x, y = self._frame.pixel(args["x"], args["y"])
             if action == "screen_drag":
                 to_x, to_y = self._frame.pixel(args["to_x"], args["to_y"])
@@ -202,7 +224,7 @@ class VoiceAgent:
             if action in {"browser_click", "browser_fill", "browser_scroll",
                           "browser_back", "browser_forward", "browser_switch_tab"}:
                 if not self.windows.is_chrome_foreground():
-                    raise RuntimeError("Chromeが前面でなくなったため、ブラウザ操作を中止しました")
+                    raise TargetChangedError("Chromeが前面でなくなったため、ブラウザ操作を中止しました")
             return self.bridge.call(action, args)
         if action.startswith("windows_"):
             return self.windows.act(action, args)
@@ -440,8 +462,9 @@ class VoiceAgent:
                 if completed_steps == 0:
                     # Preserve a useful clarification from the planner.  It is only
                     # displayed as text, never used as an executable instruction.
-                    # Untrusted model text may quote a secret from the page.
-                    return self._finish("incomplete", "操作は実行されませんでした。指示を確認してください")
+                    # Only allow fixed useful clarification categories. Never
+                    # echo the original model message or any embedded secret.
+                    return self._finish("incomplete", "操作は実行されませんでした。" + safe_clarification(message))
                 if any("error" in step for step in history):
                     return self._finish("incomplete", "一部の操作でエラーがありました。操作ログを確認してください")
                 if any(step.get("verification") != "verified" for step in history):
@@ -577,13 +600,16 @@ class VoiceAgent:
                     return self._finish("interrupted", "操作を中止しました。直前の操作は実行された可能性があります")
                 # Never log or re-send remote exception text as it may echo
                 # private browser fields or credentials.
-                self.log(f"操作エラー（{type(e).__name__}）")
+                if isinstance(e, TargetChangedError):
+                    self.log("操作エラー: 画面が切り替わったため中止しました")
+                else:
+                    self.log(f"操作エラー（{type(e).__name__}）")
                 history.append({"action": action, "error": type(e).__name__})
                 if action in EFFECTFUL_ACTIONS:
                     # Connection loss and timeouts may occur *after* a remote
                     # operation has committed. Never plan another side effect
                     # when its completion is unknown (in either task mode).
-                    if isinstance(e, (ValueError, PermissionError)):
+                    if isinstance(e, (ValueError, PermissionError, TargetChangedError)):
                         return self._finish("incomplete", "操作を安全に実行できなかったため停止しました")
                     return self._finish(
                         "unverified",
