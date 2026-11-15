@@ -280,6 +280,16 @@ class VoiceAgent:
         self._expected_input_hwnd = fast_hwnd
         try:
             result = self._execute(action, args)
+        except InterruptedError:
+            self._fast_outcome = self._finish("interrupted", "高速操作を中止しました")
+            return True
+        except RuntimeError:
+            # E.g. foreground switch after Ctrl+V/Ctrl+Z confirmation:
+            # fail closed instead of dispatching the key into another app.
+            if action not in FOREGROUND_BOUND:
+                raise
+            self._fast_outcome = self._finish("incomplete", "操作対象が変わったため入力を中止しました")
+            return True
         finally:
             self._expected_input_hwnd = None
         if self.stop_event.is_set():
