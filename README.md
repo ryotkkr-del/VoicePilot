@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.3: opt-in measured speech check + final cancellation boundary
+
+Added a strictly optional, three-trial local Whisper microphone benchmark. The user must explicitly consent (`YES`); each phrase capture is bounded to eight seconds. It reports number of exact matches and warm-model inference time without saving/printing audio or recognized text, uploading personal content, or dispatching any PC action. The initial Whisper weights download may still require network access. Run `run_tests.bat` and opt in to the additional benchmark, or use `tests/windows_safety_check.py --interactive-microphone-benchmark` inside the app's Python environment. The previous one-trial diagnostic is preserved.
+
+The agent now checks cancellation again at the shared action dispatch boundary to narrow the race between planning and execution. It does not undo an action already underway. Unit tests use mocks and do not send real keyboard or microphone input. The safety diagnostic reads `VERSION` instead of displaying a stale hard-coded version. On-device recognition and latency have **not** yet been measured.
+
 ## v0.23.2: Confirm fast-path Undo, and test PRs before release
 
 An explicit Japanese "undo this app's edit" command previously bypassed the approval that the AI-planned Ctrl+Z action already required. The deterministic shortcut now asks for confirmation **before** sending Ctrl+Z, because undo may revert the user's own work. Refusal or cancellation prevents the key action. Ctrl+V still requires approval; Ctrl+C does not gain an unnecessary prompt. Mock-based regressions cover these boundaries without touching a real desktop.
