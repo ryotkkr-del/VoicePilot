@@ -24,6 +24,8 @@ import uuid
 import unicodedata
 import zipfile
 
+BOOTSTRAP_SECURITY_REVISION = 2  # Backup preflight + durable transaction recovery (not signed)
+
 REPO = "ryotkkr-del/VoicePilot"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
