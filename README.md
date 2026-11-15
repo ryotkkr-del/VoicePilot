@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.7: minimize cloud context and reject stale Chrome tab reads/actions (P0)
+
+For Gemini, omit unrelated previous instructions, previously discovered file paths, and historical target descriptions from the model prompt. Other Chrome tab titles or Windows window lists are excluded unless the current instruction expressly requests a tab/window switch. The original in-memory snapshot is preserved for local validation; the local Ollama path retains previous context behavior. This intentionally reduces context-dependent cloud functionality to avoid transmitting older unrelated private data.
+
+The Chrome extension rechecks the active tab and window immediately before injected page operations, and checks actual document visibility/focus in the page's execution context before reading or mutating it. A failed snapshot now returns a constant error instead of an arbitrary page exception, tab title or URL fragment. Added mocked regression tests for focus switches, hidden documents and dummy secrets. The checks narrow, but cannot eliminate, OS-level race conditions.
+
+Roadmap P0 status remains **partially implemented**, not approved for production. Update signing, real-device integration tests, and exhaustive cloud/screenshot disclosures are pending.
+
 ## v0.23.6: P0 roadmap — stop after ambiguous effects and redact operation logs
 
 The user-provided go-live roadmap is now tracked in [docs/ROADMAP_PROGRESS.md](docs/ROADMAP_PROGRESS.md), with **P0 blocking P1 and P2**. This release is a partial P0-2/P0-3 improvement, not a full safety sign-off.

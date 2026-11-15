@@ -37,20 +37,36 @@ def _shortlist(items: list[dict], utterance: str, limit: int,
     return [item for idx, item in enumerate(items) if idx in kept]
 
 
-def compact_for_model(context: dict, instruction: str) -> dict:
-    """Make a fresh shallow copy; original context is used for safety checks."""
+def compact_for_model(context: dict, instruction: str, *, cloud: bool = False) -> dict:
+    """Keep full local safety evidence, but transmit only task-relevant cloud context.
+
+    Consent for the current screen/instruction isn't consent to send previous
+    commands, unrelated file paths, or background window titles.
+    """
     compact = dict(context)
     reference = (context.get("task_memory") or {}).get("resolved_reference") or {}
+    if cloud:
+        compact.pop("recent_instructions", None)
+        compact.pop("recent_files", None)
+        # Historical target details can reveal earlier private documents.
+        # Only a freshly re-resolved reference remains available.
+        compact["task_memory"] = (
+            {"resolved_reference": dict(reference)} if isinstance(reference, dict) and reference else {}
+        )
     browser = context.get("browser")
     if isinstance(browser, dict):
         compact["browser"] = dict(browser)
         compact["browser"].pop("document_ref", None)  # Keep page fingerprints away from models.
         required = {str(reference["id"])} if reference.get("source") == "browser" else set()
         compact["browser"]["elements"] = _shortlist(browser.get("elements", []), instruction, 70, required)
+        if cloud and not ("タブ" in instruction or "tab" in instruction.casefold()):
+            compact["browser"].pop("tabs", None)
     windows = context.get("windows")
     if isinstance(windows, dict):
         compact["windows"] = dict(windows)
         compact["windows"].pop("window_ref", None)
         required = {str(reference["id"])} if reference.get("source") == "windows" else set()
         compact["windows"]["controls"] = _shortlist(windows.get("controls", []), instruction, 45, required)
+        if cloud and not ("ウィンドウ" in instruction or "切り替" in instruction):
+            compact["windows"].pop("windows", None)
     return compact

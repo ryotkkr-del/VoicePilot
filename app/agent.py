@@ -446,7 +446,9 @@ class VoiceAgent:
             image_for_call, pending_image = pending_image, None
             try:
                 action, args, message = self._plan_checked(
-                    instruction, compact_for_model(context, instruction), history, image_for_call
+                    instruction, compact_for_model(
+                        context, instruction, cloud=self.planner.provider == "gemini"
+                    ), history, image_for_call
                 )
             except (ValueError, TypeError):
                 if self.stop_event.is_set():
