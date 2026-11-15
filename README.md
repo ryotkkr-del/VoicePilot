@@ -1,10 +1,3 @@
-## v0.23.2: Confirm fast-path Undo, and test PRs before release
-
-An explicit Japanese "undo this app's edit" command previously bypassed the approval that the AI-planned Ctrl+Z action already required. The deterministic shortcut now asks for confirmation **before** sending Ctrl+Z, because undo may revert the user's own work. Refusal or cancellation prevents the key action. Ctrl+V still requires approval; Ctrl+C does not gain an unnecessary prompt. Mock-based regressions cover these boundaries without touching a real desktop.
-
-GitHub Actions now runs the Windows test suite on pull requests, while publishing remains disabled for pull-request events. Local speech, browser and desktop capabilities are retained. Real-machine operation accuracy, interruption reliability and CPU usage have not yet been measured.
-
-
 # VoicePilot
 
 **Voice-controlled Windows PC assistant (prototype)**
@@ -12,6 +5,12 @@ GitHub Actions now runs the Windows test suite on pull requests, while publishin
 VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applications, browser pages, and files using Japanese speech. The goals are **flexible control, no mandatory paid API, and Windows-wide coverage**.
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
+
+## v0.23.2: Confirm fast-path Undo, and test PRs before release
+
+An explicit Japanese "undo this app's edit" command previously bypassed the approval that the AI-planned Ctrl+Z action already required. The deterministic shortcut now asks for confirmation **before** sending Ctrl+Z, because undo may revert the user's own work. Refusal or cancellation prevents the key action. Ctrl+V still requires approval; Ctrl+C does not gain an unnecessary prompt. Mock-based regressions cover these boundaries without touching a real desktop.
+
+GitHub Actions now runs the Windows test suite on pull requests, while publishing remains disabled for pull-request events. Local speech, browser and desktop capabilities are retained. Real-machine operation accuracy, interruption reliability and CPU usage have not yet been measured.
 
 ## v0.23.1: Windows output compatibility and release consistency
 
