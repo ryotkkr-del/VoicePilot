@@ -38,8 +38,11 @@ class _Windows:
     def is_chrome_foreground(self):
         return False
 
+    def foreground_hwnd(self):
+        return 101
+
     def snapshot(self):
-        return {"active_title": "メモ帳", "windows": [],
+        return {"active_title": "メモ帳", "window_ref": "101", "windows": [],
                 "controls": [{"id": "0", "name": "次へ", "type": "Button"}]}
 
     def act(self, name, args):
