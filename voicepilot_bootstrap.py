@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import unicodedata
 import zipfile
 
 REPO = "ryotkkr-del/VoicePilot"
@@ -124,6 +125,15 @@ def _safe_name(name: str) -> str:
         raise UpdateError("更新アーカイブのパスが不正です")
     if len(path.parts) > 8 or any(p.startswith(".") for p in path.parts):
         raise UpdateError("隠しファイルや深すぎるパスを含む更新は許可しません")
+    # ZIP path rules must be validated with Windows semantics even when
+    # running unit tests on Linux. NTFS supports case-insensitive names and
+    # alternative data streams (the colon is not an ordinary filename char).
+    # Reject Win32 reserved devices and other ambiguous paths *before*
+    # extraction, so nothing can alias or redirect a release file.
+    for part in path.parts:
+        if (part.endswith((" ", ".")) or any(ord(c) < 32 or c in '<>:"|?*' for c in part)
+                or re.fullmatch(r"(?i)(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?", part)):
+            raise UpdateError("Windowsで安全に扱えない更新パスです")
     if not (name in _ALLOWED_FILES or name.startswith(_ALLOWED_DIRS)):
         raise UpdateError(f"未許可の更新ファイルです: {name[:80]}")
     if not (name.endswith((".py", ".js", ".json", ".html", ".md", ".txt", ".bat")) or name == "VERSION"):
@@ -134,6 +144,7 @@ def _safe_name(name: str) -> str:
 def extract_checked(archive: Path, folder: Path, expected_version: str) -> dict[str, str]:
     """Reject archive tricks before writing any extracted file."""
     hashes = {}
+    seen_windows_names: set[str] = set()
     with zipfile.ZipFile(archive) as zf:
         infos = zf.infolist()
         if len(infos) > MAX_FILES:
@@ -146,8 +157,10 @@ def extract_checked(archive: Path, folder: Path, expected_version: str) -> dict[
             mode = entry.external_attr >> 16
             if stat.S_ISLNK(mode):
                 raise UpdateError("シンボリックリンクは許可していません")
-            if name in hashes:
-                raise UpdateError("更新ファイル名が重複しています")
+            normalized = unicodedata.normalize("NFC", name).casefold()
+            if name in hashes or normalized in seen_windows_names:
+                raise UpdateError("Windows上で重複する更新ファイル名です")
+            seen_windows_names.add(normalized)
             total += entry.file_size
             if total > MAX_UNPACKED_BYTES:
                 raise UpdateError("展開後のサイズが大きすぎます")
