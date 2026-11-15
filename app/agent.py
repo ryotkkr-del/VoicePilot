@@ -405,7 +405,21 @@ class VoiceAgent:
                     return self._finish("incomplete", "画像観測の上限に達しました。操作対象を特定できませんでした")
                 if self.planner.provider == "gemini" and not self.allow_cloud_image:
                     return self._finish("incomplete", "Geminiにスクリーンショットを送る許可がありません。画像共有を有効にするかOllamaを使ってください")
-                self._frame = capture_screen(self.windows.foreground_hwnd())
+                # A terminal may disguise itself as an ordinary window.
+                # Check the actual foreground process BEFORE screen capture.
+                guard = getattr(self.windows, "assert_safe_observation", None)
+                try:
+                    if guard is not None:
+                        guard()
+                    before_hwnd = self.windows.foreground_hwnd()
+                    frame = capture_screen(before_hwnd)
+                    if self.windows.foreground_hwnd() != before_hwnd:
+                        return self._finish("incomplete", "画面が切り替わったため画像を破棄しました")
+                    if guard is not None:
+                        guard()  # A new protected app may have gained focus.
+                except PermissionError:
+                    return self._finish("incomplete", "保護対象の画面は取得できません")
+                self._frame = frame
                 pending_image = self._frame.jpeg
                 vision_count += 1
                 self.log("画面の画像を観測して操作対象を確認しています")

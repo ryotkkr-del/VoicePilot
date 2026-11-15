@@ -6,6 +6,16 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.22: Windows safety verification and fail-closed desktop boundaries
+
+**Security fixes:** Chrome foreground detection checks the actual process executable (`chrome.exe`), rather than a spoofable window title. Elevated VoicePilot instances are refused at app startup; synthetic input also checks privilege before acting. The agent and read-only screen assistant reject screenshots/accessible content from blocked or unidentifiable foreground processes, and discard frames if focus changes while a screenshot is captured. An interrupted view is never forwarded to a model as fallback text.
+
+**Automated tests:** `python -m unittest discover -s tests` now also runs Windows-specific, read-only Win32 process probes and real rename/move/overwrite-rejection tests confined to `TemporaryDirectory` scratch files (all other user roots are mocked). These Windows CI checks do **not** use real desktop clicks, microphones, keyboard events or privileged actions. `run_tests.bat` additionally prints a short local safety preflight with no personal filenames or screenshots in the report. It optionally offers a **separately consented, test-only Notepad input** exercise: creates a blank document under `%TEMP%`, requires explicit `YES`, checks the foreground executable and scratch-window title, and uses the dictation focus guard before typing one harmless string. It does not save, close or click any real application.
+
+**Limits:** Windows CI process APIs + scratch NTFS tests are real Windows-platform checks, but are not a physical-laptop, live-microphone or actual user-desktop certification. The Notepad exercise must be run by the user and can be refused by the accessibility guard on unsupported editor configurations. Model errors, other app behavior, incomplete interruption/undo, time-of-check/time-of-use races and unsigned GitHub Releases still present risk. Do not run VoicePilot as administrator or entrust it with unattended important operations. This hardening does not imply full isolation from the PC.
+
+To run the safe local check on Windows, first launch `setup_and_run.bat` as a normal user and then double-click `run_tests.bat`. The default checks do not send keyboard/mouse input. If the optional Notepad exercise is offered, you can decline it with `N`.
+
 ## v0.21: opt-in bounded multi-step tasks & PC safety hardening
 
 Use **長い作業（確認付き）** to explicitly start a longer UI task after a confirmation dialog. This mode reuses the existing desktop/browser action executor. It is capped at **28 planning iterations, 12 potentially effectful PC operations, and 240 seconds**, with a checkpoint after about six operations and separate confirmation for consequential actions. An ambiguous side effect, execution exception, rejection or cancellation halts the task; it never blindly retries uncertain actions. Progress metadata (action names/status only) stays in RAM. No crash-resume or automatic undo is claimed.
@@ -75,7 +85,7 @@ Run `run_tests.bat` on Windows. Python and Node.js are required for the complete
 
 ## Documentation
 
-See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.20.
+See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.22.
 
 ## Security and permissions
 

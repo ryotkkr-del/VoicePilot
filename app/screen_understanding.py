@@ -86,6 +86,11 @@ class ScreenAssistant:
             raise InterruptedError("説明を中止しました")
         if self.planner.provider == "gemini" and not self.allow_cloud_ui:
             raise PermissionError("Geminiへの画面情報送信が許可されていません。Ollamaを使うかクラウド送信を明示的に許可してください")
+        # Avoid capturing or forwarding terminal/admin-tool contents, even
+        # when their user-editable title looks like an ordinary application.
+        guard = getattr(self.windows, "assert_safe_observation", None)
+        if guard is not None:
+            guard()
         context = self.context_provider()
         excerpt = None
         if self.bridge.connected and self.windows.is_chrome_foreground():
@@ -106,7 +111,18 @@ class ScreenAssistant:
         # Never upload an image unless its separate cloud permission is ON.
         if self.planner.provider != "gemini" or self.allow_cloud_image:
             try:
-                screenshot = capture_screen(self.windows.foreground_hwnd()).jpeg
+                before_hwnd = self.windows.foreground_hwnd()
+                frame = capture_screen(before_hwnd)
+                # Do not forward a screenshot if focus moved mid-capture.
+                if self.windows.foreground_hwnd() != before_hwnd:
+                    raise PermissionError("画像取得中に画面が切り替わりました。情報を破棄しました")
+                if guard is not None:
+                    guard()
+                screenshot = frame.jpeg
+            except PermissionError:
+                # A focus change or protected process must not fall back to
+                # sending stale textual observations to a cloud model.
+                raise
             except (OSError, RuntimeError, ValueError, ImportError):
                 pass  # Textual observation is still useful if capture fails.
         if not observation and screenshot is None:

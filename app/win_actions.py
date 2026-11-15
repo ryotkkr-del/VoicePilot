@@ -62,6 +62,20 @@ BLOCKED_APP = re.compile(
 )
 
 
+def current_process_elevated() -> bool:
+    """Refuse privileged execution; unknown Windows privilege state also fails closed.
+
+    Never request UAC elevation. This checks only our own process; individual
+    foreground windows are checked separately before desktop interaction.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError, ValueError):
+        return True
+
+
 def is_unsafe_foreground(title: str, executable: str | None) -> bool:
     """Pure safety rule; a changed terminal title is never sufficient to bypass."""
     return (bool(UNSAFE_WINDOW.search(title)) or not executable
@@ -453,8 +467,13 @@ class WindowsController:
         return buf.value
 
     def is_chrome_foreground(self) -> bool:
-        title = self.active_window_title().lower()
-        return "chrome" in title or "クローム" in title
+        """Use executable identity, NEVER a mutable window title.
+
+        A terminal can be renamed to `Google Chrome`; title-based detection
+        would route commands to the wrong application or leak UI state.
+        When process inspection fails, return False (fail closed).
+        """
+        return self._foreground_process_name() == "chrome.exe"
 
     @staticmethod
     def _foreground_process_name() -> str | None:
@@ -494,10 +513,19 @@ class WindowsController:
 
     def _ensure_not_terminal(self):
         # Title-only checks are bypassable by changing a terminal's title.
-        # Refuse unknown/elevated processes when sending synthetic input.
+        # Refuse unknown/blocked foreground processes and elevated VoicePilot.
+        if current_process_elevated():
+            raise ValueError("管理者権限ではPCを自動操作できません。通常権限で起動してください")
         if os.name == "nt" and is_unsafe_foreground(
                 self.active_window_title(), self._foreground_process_name()):
             raise ValueError("操作先のプロセスを安全に確認できません。操作を中止しました")
+
+    def assert_safe_observation(self) -> None:
+        """Fail closed before reading a screenshot or accessibility contents."""
+        try:
+            self._ensure_not_terminal()
+        except ValueError as exc:
+            raise PermissionError("保護対象の画面または管理者権限での画面取得は許可しません") from exc
 
     def quick_state(self) -> dict:
         """Cheap postcondition probe, without touching the UIA tree."""
@@ -516,8 +544,11 @@ class WindowsController:
         # Do not traverse Chrome's accessibility tree when the fast DOM bridge
         # is working.  If disconnected, use the same bounded UIA fallback as
         # other apps; a separate extension should not be required to try.
-        if ((self.is_chrome_foreground() and not self.allow_chrome_uia_fallback)
-                or UNSAFE_WINDOW.search(title)):
+        # Do not enumerate a spoofed terminal's controls into the AI context.
+        if os.name == "nt" and (current_process_elevated() or
+                is_unsafe_foreground(title, self._foreground_process_name())):
+            return result
+        if self.is_chrome_foreground() and not self.allow_chrome_uia_fallback:
             return result
         try:
             from pywinauto import Desktop

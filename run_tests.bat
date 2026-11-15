@@ -19,6 +19,16 @@ if errorlevel 1 (
     if errorlevel 1 goto failure
   )
 )
+echo.
+echo Windowsの安全診断を実行します。個人ファイルや画面の操作はしません。
+".venv\Scripts\python.exe" tests\windows_safety_check.py
+if errorlevel 1 goto failure
+echo.
+choice /C YN /N /M "任意のメモ帳入力テストも実行しますか？ (Y/N): "
+if errorlevel 2 goto done
+".venv\Scripts\python.exe" tests\windows_safety_check.py --interactive-notepad
+if errorlevel 1 goto failure
+:done
 echo テスト完了
 pause
 exit /b 0

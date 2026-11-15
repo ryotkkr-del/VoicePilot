@@ -20,7 +20,7 @@ from .planner import Planner
 from .audio import Microphone, SpeechRecognizer
 from .bridge import BrowserBridge
 from .hotkey import register_windows_hotkey
-from .win_actions import WindowsController
+from .win_actions import WindowsController, current_process_elevated
 from .ux import presentation, meter_level, friendly_error
 from .ui_dispatch import UIDispatcher
 from .voice_feedback import SpeechFeedback, result_announcement
@@ -1205,6 +1205,10 @@ class VoicePilotApp:
 def main():
     if sys.platform != "win32":
         raise SystemExit("VoicePilotの画面操作はWindows 11で実行してください")
+    # Running elevated would allow synthetic input to touch privileged tools.
+    # This application never needs admin rights for its supported operations.
+    if current_process_elevated():
+        raise SystemExit("安全のため管理者権限では起動できません。通常のユーザー権限で実行してください")
     # Avoid mismatch between screenshot pixel coordinates and Windows mouse
     # coordinates when the display is scaled to e.g. 125% / 150%.
     import ctypes

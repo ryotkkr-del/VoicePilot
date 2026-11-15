@@ -104,12 +104,13 @@ class SecurityRulesTests(unittest.TestCase):
         controller = WindowsController.__new__(WindowsController)
         controller.active_window_title = Mock(return_value="Text Editor")
         controller._foreground_process_name = Mock(return_value="powershell.exe")
-        with patch("app.win_actions.os.name", "nt"):
-            with self.assertRaises(ValueError):
+        with patch("app.win_actions.current_process_elevated", return_value=False):
+            with patch("app.win_actions.os.name", "nt"):
+                with self.assertRaises(ValueError):
+                    controller._ensure_not_terminal()
+            controller._foreground_process_name.return_value = "notepad.exe"
+            with patch("app.win_actions.os.name", "nt"):
                 controller._ensure_not_terminal()
-        controller._foreground_process_name.return_value = "notepad.exe"
-        with patch("app.win_actions.os.name", "nt"):
-            controller._ensure_not_terminal()
 
     def test_file_mutations_block_symlink_and_overwrite(self):
         from tempfile import TemporaryDirectory
