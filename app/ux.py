@@ -23,6 +23,7 @@ PRESENTATIONS = {
     "confirming": Presentation("操作の確認待ち", "確認ウィンドウで選択してください", "working", False, True),
     "cancelling": Presentation("停止しています", "現在の処理が終わると停止します", "working", False, False),
     "completed": Presentation("確認できました", "操作結果を確認しました", "success"),
+    "answered": Presentation("画面を説明しました", "回答を操作ログに表示しました", "success"),
     "handoff": Presentation("ChatGPTを開きました", "質問を確認して送信してください", "success"),
     "handoff_clipboard": Presentation("ChatGPTへ渡す準備ができました", "コピーした文章を貼り付けて送信してください", "neutral"),
     "unverified": Presentation("操作を実行しました", "結果は未確認です。必要なら画面を確認してください", "warning"),

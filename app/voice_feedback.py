@@ -39,6 +39,7 @@ def result_announcement(status: str, verified_action: str | None = None) -> str 
     return {
         "completed": "操作が完了しました。",
         "handoff": "ChatGPTに用意しました。送信は画面で確認してください。",
+        "answered": "画面の説明を表示しました。",
         "handoff_clipboard": "ChatGPTを開きました。質問を貼り付けてください。",
         "unverified": "操作しましたが、結果は確認できませんでした。",
         "incomplete": "作業はまだ完了していません。",

@@ -27,6 +27,7 @@ from .chatgpt_handoff import extract_chatgpt_request, prepare_chatgpt_handoff
 from .dictation import DictationController, dictation_intent, DictationError, DictationTarget
 from .handsfree import HandsFreeSession, handsfree_control
 from .interrupt import ActionGate, VoiceInterruptMonitor
+from .screen_understanding import ScreenAssistant, screen_question
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "VoicePilot"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -228,6 +229,12 @@ class VoicePilotApp:
         self.send_button.pack(side="left",padx=(7,0))
         self.chatgpt_button = self.button(irow,"ChatGPT下書き",self.send_to_chatgpt)
         self.chatgpt_button.pack(side="left",padx=(7,0))
+        quickrow = tk.Frame(input_card, bg=WHITE)
+        quickrow.pack(fill="x", pady=(7, 0))
+        self.screen_button = self.button(quickrow, "今の画面を説明", self.explain_current_screen)
+        self.screen_button.pack(side="left")
+        tk.Label(quickrow, text="読み取りのみ・PCを操作しません", bg=WHITE,
+                 fg=MUTED, font=(FONT, 9)).pack(side="left", padx=(8, 0))
 
         settings=self.card(shell)
         self.settings_card = settings
@@ -502,6 +509,7 @@ class VoicePilotApp:
         entry_action_state = "disabled" if self.busy or recording else "normal"
         self.send_button.configure(state=entry_action_state, text="入力" if self.dictation_target else "実行")
         self.chatgpt_button.configure(state=entry_action_state)
+        self.screen_button.configure(state=entry_action_state)
         hf_on = self.handsfree.enabled
         self.handsfree_button.configure(
             text="■ ハンズフリー終了" if hf_on else "ハンズフリー開始",
@@ -813,7 +821,7 @@ class VoicePilotApp:
                 outcome=self._run_agent(command,runtime)
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             verified_action=outcome.verified_action if finish_stage == "completed" else None
-            if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard"}:
+            if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard", "answered"}:
                 finish_detail=outcome.summary
         except Exception as e:
             finish_detail=friendly_error(e)
@@ -898,6 +906,31 @@ class VoicePilotApp:
             self.log(f"文章入力を停止しました：対象を確認できません（{type(exc).__name__}）")
             return RunOutcome("incomplete", "入力先を安全に確認できませんでした。入力モードを開始し直してください")
 
+    def explain_current_screen(self):
+        """One click to ask about the screen, even during dictation mode."""
+        if self.busy or self.recording:
+            return
+        self.busy = True
+        self.stop_event.clear()
+        runtime = self.runtime_settings()
+        self.set_phase("acting")
+        threading.Thread(target=self.run_screen_task,
+                         args=("今の画面を説明して", runtime), daemon=True).start()
+
+    def run_screen_task(self, question, runtime):
+        stage, detail = "error", None
+        try:
+            result = self._run_agent(question, runtime)
+            stage = "interrupted" if self.stop_event.is_set() else result.status
+            if stage in {"answered", "error", "incomplete"}:
+                detail = result.summary
+        except Exception as exc:
+            detail = friendly_error(exc)
+            self.log(f"画面の説明エラー: {detail}")
+        finally:
+            self.mark_idle(stage, detail)
+            self._speak_result(stage)
+
     def send_text(self):
         if self.busy or self.recording:return
         command=self.command.get().strip()
@@ -964,7 +997,7 @@ class VoicePilotApp:
                        self.dictation_target or dictation_intent(command, False) else
                        self._run_agent(command, runtime))
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
-            if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard"}:
+            if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard", "answered"}:
                 finish_detail=outcome.summary
         except Exception as e:
             finish_detail=friendly_error(e)
@@ -1043,6 +1076,25 @@ class VoicePilotApp:
             return self._run_chatgpt(addressed)
         self.restore_target()
         planner=Planner(runtime["provider"],runtime["key"],runtime["gemini_model"],runtime["ollama_model"])
+        # Explicit screen questions are read-only. Never execute an AI-suggested
+        # click, hotkey, file operation or browser navigation for these requests.
+        if screen_question(command):
+            observer = VoiceAgent(self.bridge, self.windows, planner, self.log, self.confirm,
+                                  runtime["allow_cloud_ui"], self.stop_event,
+                                  session=self.session, allow_cloud_image=runtime["allow_cloud_image"])
+            assistant = ScreenAssistant(
+                bridge=self.bridge, windows=self.windows, planner=planner,
+                context_provider=observer._context, stop_event=self.stop_event,
+                allow_cloud_ui=runtime["allow_cloud_ui"],
+                allow_cloud_image=runtime["allow_cloud_image"])
+            try:
+                answer = assistant.answer(command)
+            except InterruptedError:
+                return RunOutcome("interrupted", "画面の説明を中止しました")
+            except PermissionError as exc:
+                return RunOutcome("incomplete", str(exc))
+            self.log("画面の説明：" + answer)
+            return RunOutcome("answered", answer)
         gate = None
         monitor = None
         # Never open a background microphone without explicit hands-free opt-in.

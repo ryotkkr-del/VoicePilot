@@ -224,6 +224,27 @@ function pageOperation(operation, params) {
     el.dispatchEvent(new InputEvent('input', {bubbles:true, inputType:'insertText', data:text}));
     return {inserted:true, verified:el.value.slice(caret, caret+text.length) === text};
   }
+  if (operation === 'read_visible') {
+    // On-demand extraction of currently visible *document* text. Never read
+    // form values, editors, passwords, hidden content or scripts.
+    const selector = 'main p,article p,[role="main"] p,main li,article li,[role="main"] li,h1,h2,h3,main pre,article pre';
+    const blocks = [];
+    let total = 0;
+    for (const el of [...document.querySelectorAll(selector)].slice(0, 120)) {
+      if (el.closest?.('form,[contenteditable],textarea,input,[role="textbox"],[aria-hidden="true"],[inert],script,style,nav')) continue;
+      if (!visible(el)) continue;
+      const rect = el.getBoundingClientRect();
+      const style = getComputedStyle(el);
+      if (rect.width <= 1 || rect.height <= 1 || style.display === 'none' || style.visibility === 'hidden') continue;
+      const raw = String(el.innerText || el.textContent || '').replace(/\s+/g,' ').trim();
+      if (raw.length < 10) continue;
+      const piece = raw.slice(0, 340);
+      if (total + piece.length > 3500) break;
+      blocks.push(piece); total += piece.length;
+      if (blocks.length >= 16) break;
+    }
+    return {blocks};
+  }
   if (operation === 'snapshot') {
     const list = candidates().slice(0, 220);
     const ranked = [...list.filter(visible), ...list.filter(el => !visible(el))].slice(0, 110);
@@ -421,6 +442,11 @@ async function perform(action, args) {
     if (typeof args.text !== 'string' || !args.text || args.text.length > 2000)
       throw new Error('入力する文字数を確認してください');
     return inject(tab.id, 'dictation_insert', {token:args.token, text:args.text});
+  }
+  if (action === 'read_visible') {
+    // Read-only, and only for the foreground Chrome tab.
+    const tab = await activeTab();
+    return inject(tab.id, 'read_visible', {});
   }
   if (action === 'snapshot') {
     const tab = await activeTab();

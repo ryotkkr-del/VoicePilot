@@ -289,12 +289,23 @@ class WindowsController:
         try:
             from pywinauto import Desktop
             item = Desktop(backend='uia').from_point(x, y)
-            return {
-                'name': (item.window_text() or '')[:100],
-                'type': (item.element_info.control_type or '')[:40],
-            }
+            kind = (item.element_info.control_type or '')[:40]
+            # Edit window_text may contain the user's private typed value.
+            if kind in {'Edit', 'Document'} or _is_password_control(item):
+                return {'name': '入力欄（内容は非表示）', 'type': kind}
+            return {'name': (item.window_text() or '')[:90], 'type': kind}
         except Exception:
             return {}
+
+    def pointer_control(self) -> dict:
+        """Read-only hint under the real mouse cursor, with editor contents redacted."""
+        if os.name != 'nt':
+            return {}
+        self._ensure_not_terminal()
+        point = wintypes.POINT()
+        if not ctypes.windll.user32.GetCursorPos(ctypes.byref(point)):
+            return {}
+        return self.inspect_point(point.x, point.y)
 
     def click_point(self, x: int, y: int, double: bool = False) -> str:
         self._ensure_not_terminal()

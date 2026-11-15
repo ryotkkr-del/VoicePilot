@@ -17,6 +17,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 - **v0.18: opt-in sequential hands-free sessions** — click **ハンズフリー開始** once, then speak multiple separate commands without pressing the hotkey each time. The microphone pauses during transcription, UI operations, and SAPI voice feedback, then rearms when quiet. Stop by saying **ハンズフリー終了** or using the stop button. Sessions time out after three minutes without a recognized utterance and do not survive restart. No external voice API, wake-word listener, or extra inference model is required.
 
+## Read-only screen understanding (v0.20)
+
+Say **「今の画面を説明して」**, **「このエラーは何？」** or **「これって何？」** (with the cursor positioned over a control), or click **「今の画面を説明」**. VoicePilot examines the active Chrome page's visible headings/paragraphs, Windows accessibility controls, and an optional one-shot screenshot, then returns a Japanese explanation **without executing UI actions**. Chrome text is bounded and explicitly excludes forms, editors and hidden elements. The cursor label is read-only, and editor values are redacted. This is a best-effort explanation, not verified recognition of arbitrary graphics.
+
+Default **Ollama uses the local model**. Gemini text sharing requires `allow_cloud_ui`, and a screenshot is **never** sent to Gemini unless the separate `allow_cloud_image` permission is enabled. No screenshots are saved, and ordinary PC commands still use the existing confirmed action path. The answer is shown in the temporary activity log; voice feedback announces that it is available, but does not read private screen text aloud. Windows real-machine validation is still outstanding.
+
 ## Hands-free listening (v0.19)
 
 1. Start VoicePilot and click **ハンズフリー開始** (or **連続ON** in the compact view).
@@ -61,7 +67,7 @@ Run `run_tests.bat` on Windows. Python and Node.js are required for the complete
 
 ## Documentation
 
-See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.19.
+See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.20.
 
 ## Security and permissions
 
