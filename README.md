@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.9: P0-4 recoverable updater transaction and legacy bootstrap warning
+
+Hardens the **standalone** updater: validate every backup before a rollback, checksum new backup copies, recheck each staged file immediately before replacing installed code, and retain the recovery journal until the new rollback metadata is durably written. Disk-write failure and crash-recovery tests use temporary directories, including tampered/missing backups, changed staged code, and failures during commit metadata creation. Previously created legacy recovery journals remain readable (without new per-file hashes).
+
+The desktop GUI now warns when the actual installed immutable updater lacks `BOOTSTRAP_SECURITY_REVISION = 2`. **The bootstrap is still excluded from automatic self-updates**, so existing installs do **not** inherit the new recovery checks when application code updates. No automated root-of-trust migration or independently signed releases are claimed. See [docs/SECURE_UPDATE_MIGRATION.md](docs/SECURE_UPDATE_MIGRATION.md). Windows CI is not equivalent to testing on the user's Windows machine, and SHA-256 from GitHub metadata is not an independent developer signature.
+
 ## v0.23.8: P0 screen disclosure minimization and Windows archive path validation
 
 Cloud screen explanations no longer include unrelated background Windows titles. Subsequent Gemini planning calls omit earlier action argument bodies, including file paths and form text; current observed task context and safety validation are retained. The local Ollama path is unchanged. Screen descriptions can still contain the currently visible page text and screenshots if their separate cloud permissions are enabled.
