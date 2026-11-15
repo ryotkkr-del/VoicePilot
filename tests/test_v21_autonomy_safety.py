@@ -190,7 +190,9 @@ class LongTaskTests(unittest.TestCase):
         ])
         agent._execute.side_effect = RuntimeError("failed to click")
         outcome = agent.run("作業して")
-        self.assertEqual(outcome.status, "incomplete")
+        # A click may have succeeded before an ambiguous runtime failure.
+        # Fail closed and label the result unverified, never retry.
+        self.assertEqual(outcome.status, "unverified")
         self.assertEqual(planner.next_action.call_count, 1)
         self.assertEqual(agent._execute.call_count, 1)
 
