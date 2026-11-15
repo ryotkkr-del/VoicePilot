@@ -5,10 +5,11 @@ No shell, arbitrary code execution, deletion, or programmatic writes.
 from __future__ import annotations
 
 import ctypes
+import ntpath
 from ctypes import wintypes
 from collections import deque
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -39,6 +40,14 @@ ALLOWED_KEYS = {
 }
 SAFE_EXTENSIONS = {".pdf", ".txt", ".md", ".png", ".jpg", ".jpeg", ".webp",
                    ".docx", ".xlsx", ".pptx", ".csv", ".mp3", ".wav", ".mp4"}
+# Process identity is checked independently of user-editable window titles.
+BLOCKED_INPUT_PROCESSES = frozenset({
+    "cmd.exe", "powershell.exe", "pwsh.exe", "windowsterminal.exe", "wt.exe",
+    "conhost.exe", "bash.exe", "wsl.exe", "wslhost.exe", "regedit.exe",
+    "mmc.exe", "taskmgr.exe", "sudo.exe", "mshta.exe", "wscript.exe",
+    "cscript.exe", "rundll32.exe", "python.exe", "pythonw.exe",
+    "msiexec.exe", "schtasks.exe", "reg.exe", "robocopy.exe",
+})
 UNSAFE_WINDOW = re.compile(r"powershell|command prompt|コマンド.?プロンプト|terminal|ターミナル|cmd\.exe|"
                            r"windows terminal|管理者:|administrator:", re.I)
 SENSITIVE_CONTROL = re.compile(
@@ -51,6 +60,97 @@ BLOCKED_APP = re.compile(
     r"powershell|cmd(?:\.exe)?|terminal|command prompt|regedit|registry editor|"
     r"ターミナル|コマンドプロンプト|レジストリ|管理者|administrator", re.I
 )
+
+
+def is_unsafe_foreground(title: str, executable: str | None) -> bool:
+    """Pure safety rule; a changed terminal title is never sufficient to bypass."""
+    return (bool(UNSAFE_WINDOW.search(title)) or not executable
+            or ntpath.basename(executable).casefold() in BLOCKED_INPUT_PROCESSES)
+
+
+def validated_shortcut_target(target: str, arguments: str = "") -> str:
+    """Never treat an attacker-controlled .lnk as a shell command.
+
+    Unknown app shortcuts are intentionally conservative: only local EXE
+    targets, not scripts, files, UNC paths, argument-bearing commands or URIs.
+    """
+    if (not isinstance(target, str) or not target.strip() or not isinstance(arguments, str)
+            or arguments.strip() or target.startswith(("\\\\", "//"))
+            or any(ch in target for ch in '\r\n\x00')):
+        raise ValueError("ショートカットの起動先を確認できません")
+    parsed = Path(target)
+    if not PureWindowsPath(target).is_absolute():
+        raise ValueError("相対パスのショートカットは起動できません")
+    if parsed.suffix.casefold() != ".exe" or ntpath.basename(target).casefold() in BLOCKED_INPUT_PROCESSES:
+        raise ValueError("スクリプト・管理ツールを指すショートカットは起動できません")
+    if BLOCKED_APP.search(ntpath.splitext(ntpath.basename(target))[0]):
+        raise ValueError("危険なツールへのショートカットは起動できません")
+    return target
+
+
+def trusted_install_executable(target: str, roots: list[str] | None = None) -> bool:
+    """Allow only installed EXEs, not an arbitrary program in Downloads/cwd.
+
+    Uses Windows path semantics even when the safety tests run on Linux.
+    """
+    if not isinstance(target, str) or not PureWindowsPath(target).is_absolute():
+        return False
+    if roots is None:
+        roots = [x for x in (
+            os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR"),
+            os.environ.get("ProgramFiles"),
+            os.environ.get("ProgramFiles(x86)"),
+            str(Path(os.environ["LOCALAPPDATA"]) / "Programs") if os.environ.get("LOCALAPPDATA") else None,
+        ) if x]
+    target_norm = ntpath.normcase(ntpath.normpath(target))
+    for root in roots:
+        if not PureWindowsPath(root).is_absolute():
+            continue
+        root_norm = ntpath.normcase(ntpath.normpath(root))
+        try:
+            if ntpath.commonpath([target_norm, root_norm]) == root_norm:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def resolved_known_app(app: str) -> str:
+    """Resolve an allowlisted app to an absolute trusted EXE before launching."""
+    command = APP_COMMANDS[app]
+    if not command:
+        raise ValueError("このアプリは専用の起動方法が必要です")
+    executable = command[0]
+    windows_root = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR")
+    system_apps = {"notepad.exe", "calc.exe", "explorer.exe", "mspaint.exe"}
+    candidate = (str(Path(windows_root) / "System32" / executable)
+                 if windows_root and executable.casefold() in system_apps else None)
+    if not candidate or not Path(candidate).is_file():
+        candidate = shutil.which(executable)
+    if not candidate or not trusted_install_executable(candidate):
+        raise FileNotFoundError("確認できる場所にインストールされたアプリが見つかりません")
+    return candidate
+
+
+def resolve_start_shortcut(path: Path) -> str:
+    """Resolve locally via Windows Shell Link, then launch the EXE, not the .lnk.
+
+    Windows COM stays on the calling worker thread; we never trust the .lnk
+    name alone or pass its arguments to subprocess. No shell=True.
+    """
+    if os.name != "nt" or path.suffix.casefold() != ".lnk" or path.is_symlink():
+        raise ValueError("Windowsの通常のショートカットだけ起動できます")
+    import pythoncom
+    from win32com.client import Dispatch
+    pythoncom.CoInitialize()
+    try:
+        link = Dispatch("WScript.Shell").CreateShortcut(str(path))
+        target = validated_shortcut_target(str(link.TargetPath), str(link.Arguments))
+        if not Path(target).is_file() or not trusted_install_executable(str(Path(target).resolve())):
+            raise FileNotFoundError("信頼できるインストール場所に起動先がありません")
+        return target
+    finally:
+        pythoncom.CoUninitialize()
 
 
 def _is_password_control(control) -> bool:
@@ -356,9 +456,48 @@ class WindowsController:
         title = self.active_window_title().lower()
         return "chrome" in title or "クローム" in title
 
+    @staticmethod
+    def _foreground_process_name() -> str | None:
+        """Get the *actual* foreground executable, not a spoofable window title.
+
+        Failure is handled as unsafe for synthesized keyboard/mouse events.
+        PROCESS_QUERY_LIMITED_INFORMATION does not request elevated access.
+        """
+        if os.name != "nt":
+            return None
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.POINTER(wintypes.DWORD))
+        user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+        if not user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid)) or not pid.value:
+            return None
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        process = kernel32.OpenProcess(0x1000, False, pid.value)
+        if not process:
+            return None
+        try:
+            buf = ctypes.create_unicode_buffer(32768)
+            size = wintypes.DWORD(len(buf))
+            kernel32.QueryFullProcessImageNameW.argtypes = (
+                wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD))
+            kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            if not kernel32.QueryFullProcessImageNameW(process, 0, buf, ctypes.byref(size)):
+                return None
+            return Path(buf.value).name.casefold()
+        finally:
+            kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+            kernel32.CloseHandle(process)
+
     def _ensure_not_terminal(self):
-        if UNSAFE_WINDOW.search(self.active_window_title()):
-            raise ValueError("ターミナル・管理者権限画面への操作は許可していません")
+        # Title-only checks are bypassable by changing a terminal's title.
+        # Refuse unknown/elevated processes when sending synthetic input.
+        if os.name == "nt" and is_unsafe_foreground(
+                self.active_window_title(), self._foreground_process_name()):
+            raise ValueError("操作先のプロセスを安全に確認できません。操作を中止しました")
 
     def quick_state(self) -> dict:
         """Cheap postcondition probe, without touching the UIA tree."""
@@ -428,6 +567,13 @@ class WindowsController:
             pass
         return result
 
+    def _check_fill_target(self, item) -> None:
+        self._ensure_not_terminal()
+        if (self._foreground_hwnd() != self._last_control_window
+                or not item.is_visible()
+                or _is_password_control(item)):
+            raise RuntimeError("文字入力先が変化しました。入力を中止します")
+
     def act(self, name: str, args: dict):
         from pywinauto import Desktop, keyboard
         if name == "windows_focus":
@@ -449,30 +595,29 @@ class WindowsController:
             app = str(args.get("app", "")).lower()
             if app not in APP_COMMANDS:
                 shortcut = app_shortcut(app)
-                os.startfile(str(shortcut))
+                executable = resolve_start_shortcut(shortcut)
+                subprocess.Popen([executable], shell=False)
                 return f'{shortcut.stem} を起動しました' 
             if app == "settings":
                 os.startfile("ms-settings:")
             elif app == "chrome":
                 try:
-                    subprocess.Popen(APP_COMMANDS[app], shell=False)
-                except OSError:
-                    # Do not open Edge / a different default browser and claim
-                    # Chrome launched.  Use the installed shortcut, or report it.
-                    try:
-                        shortcut = app_shortcut("Google Chrome")
-                    except (FileNotFoundError, ValueError) as exc:
-                        raise FileNotFoundError("Google Chromeが見つかりません。インストール状況を確認してください") from exc
-                    os.startfile(str(shortcut))
+                    binary = resolved_known_app(app)
+                except (FileNotFoundError, ValueError):
+                    # Chrome often isn't on PATH. Its Start Menu link is
+                    # resolved to a vetted EXE, never executed as a .lnk.
+                    binary = resolve_start_shortcut(app_shortcut("Google Chrome"))
+                subprocess.Popen([binary], shell=False)
             else:
                 if app == "vscode":
-                    path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Microsoft VS Code" / "Code.exe")
-                    executable = str(path) if path.is_file() else shutil.which("Code.exe")
-                    if executable is None:
-                        raise FileNotFoundError("VS Codeが見つかりません。先にインストールしてください")
-                    subprocess.Popen([executable], shell=False)
+                    path = (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" /
+                            "Microsoft VS Code" / "Code.exe")
+                    binary = str(path) if path.is_file() else resolved_known_app(app)
+                    if not trusted_install_executable(binary):
+                        raise ValueError("不明な場所のプログラムは実行できません")
                 else:
-                    subprocess.Popen(APP_COMMANDS[app], shell=False)
+                    binary = resolved_known_app(app)
+                subprocess.Popen([binary], shell=False)
             return "アプリを起動しました"
         if name in {"windows_arrange", "windows_minimize", "windows_maximize"}:
             self._ensure_not_terminal()
@@ -538,8 +683,8 @@ class WindowsController:
                     item.click_input()
                 return "画面上の要素をクリックしました"
             text = str(args.get("text", ""))
-            if not text or len(text) > 3000:
-                raise ValueError("入力する文字数が不正です")
+            if not text or len(text) > 3000 or any(ord(ch) < 32 for ch in text):
+                raise ValueError("入力する文字数または制御文字が不正です")
             if ((item.element_info.control_type or "") != "Edit" or
                     SENSITIVE_CONTROL.search(item.window_text()) or
                     _is_password_control(item)):
@@ -548,8 +693,11 @@ class WindowsController:
                 item.set_edit_text(text)
             except Exception:
                 item.set_focus()
-                keyboard.send_keys("^a")
-                keyboard.send_keys(text, with_spaces=True, vk_packet=True, pause=0.005)
+                self._ensure_not_terminal()
+                if self._foreground_hwnd() != self._last_control_window:
+                    raise RuntimeError("入力先が変化したため停止しました")
+                keyboard.send_keys("^a")  # Fixed hotkey, never user-supplied text.
+                _send_literal_unicode(text, on_chunk=lambda: self._check_fill_target(item))
             try:
                 actual = item.get_value()
             except Exception:
@@ -562,10 +710,15 @@ class WindowsController:
         self._ensure_not_terminal()
         if name == "windows_type":
             value = str(args.get("text", ""))
-            if not value or len(value) > 3000:
-                raise ValueError("入力する文章が不正です")
-            keyboard.send_keys(value, with_spaces=True, vk_packet=True, pause=0.005)
-            return "文章を入力しました"
+            if (not value or len(value) > 3000 or
+                    any(ord(ch) < 32 for ch in value)):
+                raise ValueError("入力する文章が不正です。改行や制御文字は使えません")
+            # Never pass generated text to pywinauto.send_keys: ^, %, +,
+            # and {ENTER} are interpreted as real keyboard shortcuts.
+            expected = self._dictation_focus()  # Refuse unknown editor or selected text.
+            target = expected[0] + ":" + expected[1]
+            _send_literal_unicode(value, on_chunk=lambda: self._dictation_check(target))
+            return "文字列を入力しました（ショートカットは実行していません）"
         if name == "windows_hotkey":
             key = str(args.get("keys", "")).lower()
             if key not in ALLOWED_KEYS:

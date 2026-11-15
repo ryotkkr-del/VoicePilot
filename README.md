@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.21: opt-in bounded multi-step tasks & PC safety hardening
+
+Use **長い作業（確認付き）** to explicitly start a longer UI task after a confirmation dialog. This mode reuses the existing desktop/browser action executor. It is capped at **28 planning iterations, 12 potentially effectful PC operations, and 240 seconds**, with a checkpoint after about six operations and separate confirmation for consequential actions. An ambiguous side effect, execution exception, rejection or cancellation halts the task; it never blindly retries uncertain actions. Progress metadata (action names/status only) stays in RAM. No crash-resume or automatic undo is claimed.
+
+**Safety fixes:** literal Unicode input replaces `pywinauto.send_keys` for AI-proposed text; input focus and selection are verified via UI Automation. Terminal/process identity checks inspect the actual Windows process (not just a spoofable window title). Start Menu shortcuts are resolved to local installed executables and cannot pass arbitrary arguments or scripts. Browser URL validation also rejects alternative numeric encodings of private loopback addresses. Existing archive verification, user-folder restrictions, action approval and stop controls remain.
+
+**Do not consider this safe for unattended critical work.** PC automation can cause side effects in real applications; Windows hardware interoperability, microphone success and process privilege boundaries are not yet tested end-to-end. No elevated privileges or arbitrary shell/registry/delete actions are added. GitHub asset SHA-256 checks do not provide an independent developer signing key. Test in a disposable Windows user account or VM using dummy files, without running as administrator. Some legitimate applications and custom shortcuts may now be refused to fail closed.
+
 ## Features
 
 - Japanese speech recognition using faster-whisper (local)

@@ -15,6 +15,7 @@ import webbrowser
 from tkinter import ttk, messagebox
 
 from .agent import VoiceAgent, RunOutcome
+from .task_policy import LongTaskLimits
 from .planner import Planner
 from .audio import Microphone, SpeechRecognizer
 from .bridge import BrowserBridge
@@ -233,6 +234,8 @@ class VoicePilotApp:
         quickrow.pack(fill="x", pady=(7, 0))
         self.screen_button = self.button(quickrow, "今の画面を説明", self.explain_current_screen)
         self.screen_button.pack(side="left")
+        self.long_task_button = self.button(quickrow, "長い作業（確認付き）", self.start_long_task)
+        self.long_task_button.pack(side="left", padx=(7, 0))
         tk.Label(quickrow, text="読み取りのみ・PCを操作しません", bg=WHITE,
                  fg=MUTED, font=(FONT, 9)).pack(side="left", padx=(8, 0))
 
@@ -510,6 +513,7 @@ class VoicePilotApp:
         self.send_button.configure(state=entry_action_state, text="入力" if self.dictation_target else "実行")
         self.chatgpt_button.configure(state=entry_action_state)
         self.screen_button.configure(state=entry_action_state)
+        self.long_task_button.configure(state=entry_action_state)
         hf_on = self.handsfree.enabled
         self.handsfree_button.configure(
             text="■ ハンズフリー終了" if hf_on else "ハンズフリー開始",
@@ -931,6 +935,33 @@ class VoicePilotApp:
             self.mark_idle(stage, detail)
             self._speak_result(stage)
 
+    def start_long_task(self):
+        """Explicit per-task opt-in; never enabled by a spoken web page or model."""
+        if self.busy or self.recording or self.dictation_target is not None:
+            return
+        command = self.command.get().strip()
+        if not command:
+            self.log("長い作業の目標を入力してください")
+            return
+        # The initial confirmation only grants a bounded *attempt*, not
+        # permission for risky site actions, drafts, saves or file movement.
+        if not messagebox.askyesno(
+                "自律作業の開始確認 · VoicePilot",
+                "最大12回のPC操作・最大240秒の作業を開始します。\n"
+                "約6操作ごとに続行確認し、送信・保存・移動等は個別に確認します。\n"
+                "結果が不明な操作やエラーがあれば停止します。\n\n"
+                "タスクを開始しますか？",
+                parent=self.mini if self.mini and self.mini.winfo_exists() else self.root):
+            return
+        self.busy = True
+        self.stop_event.clear()
+        runtime = self.runtime_settings()
+        # Never log the raw goal; it may contain personal information.
+        self.log("自律作業を開始しました（目標の文字列はログに保存しません）")
+        self.set_phase("acting")
+        threading.Thread(target=self.run_text_task,
+                         args=(command, runtime, False, True), daemon=True).start()
+
     def send_text(self):
         if self.busy or self.recording:return
         command=self.command.get().strip()
@@ -988,14 +1019,14 @@ class VoicePilotApp:
         self.log(result.message)
         return RunOutcome(result.stage, result.message)
 
-    def run_text_task(self,command,runtime,force_chatgpt=False):
+    def run_text_task(self,command,runtime,force_chatgpt=False,autonomous=False):
         finish_stage="error"
         finish_detail=None
         try:
             outcome = (self._run_chatgpt(command) if force_chatgpt else
                        self._run_dictation_command(command) if
                        self.dictation_target or dictation_intent(command, False) else
-                       self._run_agent(command, runtime))
+                       self._run_agent(command, runtime, autonomous=autonomous))
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard", "answered"}:
                 finish_detail=outcome.summary
@@ -1069,7 +1100,7 @@ class VoicePilotApp:
             self.ui.post(lambda: (self.log("音声で中止を要求しました。進行中の操作は完了済みの可能性があります"),
                                   self._apply_phase()))
 
-    def _run_agent(self,command,runtime):
+    def _run_agent(self,command,runtime,autonomous=False):
         self.set_phase("acting")
         addressed = extract_chatgpt_request(command)
         if addressed is not None:
@@ -1111,9 +1142,10 @@ class VoicePilotApp:
             monitor.start()
         try:
             agent=VoiceAgent(self.bridge,self.windows,planner,self.log,self.confirm,
-                             runtime["allow_cloud_ui"],self.stop_event,max_steps=12,
+                             runtime["allow_cloud_ui"],self.stop_event,
+                             max_steps=(28 if autonomous else 12),
                              session=self.session,allow_cloud_image=runtime["allow_cloud_image"],
-                             action_gate=gate)
+                             action_gate=gate, autonomous=autonomous)
             return agent.run(command)
         finally:
             # The regular microphone must not resume until this monitor has

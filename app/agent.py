@@ -17,6 +17,7 @@ from .win_actions import (WindowsController, find_files, open_file, show_folder,
 from .verification import Evidence, assess
 from .session_context import remember_instruction, remember_step, task_context
 from .safety import RISK_WORDS, is_sensitive_field, unfamiliar_destination, approval_summary
+from .task_policy import LongTaskLimits, TaskProgress, EFFECTFUL_ACTIONS, requires_stop_for_ambiguity
 
 # Sending these operations twice can submit forms, duplicate typing, or move
 # files twice. Each distinct proposed effect is attempted at most once per run.
@@ -40,11 +41,15 @@ class VoiceAgent:
     def __init__(self, bridge, windows: WindowsController, planner: Planner,
                  log: Callable[[str], None], confirm: Callable[[str], bool],
                  allow_cloud_ui: bool, stop_event, max_steps: int = 10,
-                 session: dict | None = None, allow_cloud_image: bool = False, action_gate=None):
+                 session: dict | None = None, allow_cloud_image: bool = False, action_gate=None,
+                 autonomous: bool = False, limits: LongTaskLimits | None = None):
         self.bridge, self.windows, self.planner = bridge, windows, planner
         self.log, self.confirm = log, confirm
         self.allow_cloud_ui, self.stop_event = allow_cloud_ui, stop_event
-        self.max_steps = max(1, min(16, max_steps))
+        self.autonomous = bool(autonomous)
+        self.limits = limits or LongTaskLimits()
+        self.max_steps = max(1, min(32 if autonomous else 16, max_steps))
+        self.progress = TaskProgress() if autonomous else None
         self.allow_cloud_image = allow_cloud_image
         self.action_gate = action_gate  # optional pause/resume checkpoint
         self._frame: ScreenFrame | None = None
@@ -148,7 +153,7 @@ class VoiceAgent:
         if action in {"files_move", "files_rename", "windows_type"}:
             return True
         if action == "windows_hotkey":
-            return args.get("keys") in {"enter", "ctrl+s", "ctrl+v"}
+            return args.get("keys") in {"enter", "ctrl+s", "ctrl+v", "ctrl+z"}
         if action in {"browser_open", "browser_new_tab"}:
             return unfamiliar_destination(args["url"], instruction, context)
         # The search phrase can include page text supplied by an attacker;
@@ -345,11 +350,15 @@ class VoiceAgent:
         attempted_effects: set[str] = set()
         start = time.monotonic()
         pending_verification: tuple[int, dict] | None = None
+        effect_count = 0
+        confirmation_count = 0
+        last_checkpoint = 0
         for index in range(self.max_steps):
             if not self._may_act():
                 return self._finish("interrupted", "操作を中止しました")
             pause_seconds = self.action_gate.paused_seconds() if self.action_gate else 0.0
-            if time.monotonic() - start - pause_seconds > 100:
+            max_seconds = self.limits.max_seconds if self.autonomous else 100
+            if time.monotonic() - start - pause_seconds > max_seconds:
                 return self._finish("incomplete", "処理時間の上限に達したため停止しました")
             pause_generation = (self.action_gate.pause_generation if self.action_gate else 0)
             context = self._context()
@@ -405,15 +414,37 @@ class VoiceAgent:
                 return self._finish("incomplete", "画面座標の操作には直前の画像観測が必要です")
             key = json.dumps({"action": action, "args": args}, ensure_ascii=False, sort_keys=True)
             non_repeatable = action in NON_REPEATABLE or (
-                action == "windows_hotkey" and args.get("keys") in {"enter", "ctrl+v", "ctrl+s"})
+                action == "windows_hotkey" and args.get("keys") in {"enter", "ctrl+v", "ctrl+s", "ctrl+z"})
             if non_repeatable and key in attempted_effects:
                 return self._finish("incomplete", "同じ操作の再実行を防ぐため停止しました。画面を確認してから新しい指示を出してください")
             signatures[key] = signatures.get(key, 0) + 1
             if signatures[key] >= 3:
                 return self._finish("incomplete", "同じ操作の繰り返しを検出したため停止しました")
-            self.log(f"{index + 1}/{self.max_steps}  {message or action}")
+            self.log(f"{index + 1}/{self.max_steps}  {action}" if self.autonomous
+                     else f"{index + 1}/{self.max_steps}  {message or action}")
             try:
-                if self._requires_confirmation(action, args, context, instruction):
+                if self.autonomous and action in EFFECTFUL_ACTIONS:
+                    if effect_count >= self.limits.max_effects:
+                        return self._finish("incomplete", "自律作業の操作数上限です。状態を確認して再指示してください")
+                    if effect_count - last_checkpoint >= self.limits.checkpoint_every:
+                        confirmation_count += 1
+                        if confirmation_count > self.limits.max_confirmations or not self.confirm(
+                                "自律作業は途中まで進みました。現在の画面を確認して、続けてもよいですか？"):
+                            return self._finish("interrupted", "自律作業を確認地点で停止しました")
+                        last_checkpoint = effect_count
+                        # Approval may steal focus or change the UI. Re-observe.
+                        self._frame = None
+                        continue
+                requires_confirmation = self._requires_confirmation(action, args, context, instruction)
+                if self.autonomous and action in {"windows_launch", "files_open"}:
+                    # Long tasks must not silently open an app or a downloaded file,
+                    # even if the planner inferred its name from untrusted UI text.
+                    requires_confirmation = True
+                if requires_confirmation:
+                    if self.autonomous:
+                        confirmation_count += 1
+                        if confirmation_count > self.limits.max_confirmations:
+                            return self._finish("incomplete", "承認確認の回数上限で停止しました")
                     # Model-generated 'message' is untrusted; the dialog shows
                     # only action parameters and the observed target.
                     detail = approval_summary(action, args, context)
@@ -427,16 +458,40 @@ class VoiceAgent:
                     continue
                 if non_repeatable:
                     attempted_effects.add(key)  # count ambiguous failures as attempts
+                if self.autonomous and action in EFFECTFUL_ACTIONS:
+                    effect_count += 1
                 result = self._execute(action, args)
                 try:
                     evidence = assess(action, args, result, self.windows)
                 except Exception:
                     # Verification errors do not justify redoing a side effect.
                     evidence = Evidence("unverified", "操作結果の確認に失敗しました")
+                if (self.autonomous and evidence.status != "verified" and
+                        action in {"browser_click", "windows_click"} and not self.stop_event.is_set()):
+                    # A click can finish between an immediate acknowledgement
+                    # and the next fresh UI snapshot. Observe once more, NEVER
+                    # replay the click because its effect was ambiguous.
+                    try:
+                        after = self._context()
+                        if self._ui_transition_verified(action, context, after):
+                            evidence = Evidence("verified", "画面遷移を改めて確認しました")
+                    except Exception:
+                        pass
                 history.append({"action": action, "args": args, "result": str(result)[:800],
                                 "verification": evidence.status})
                 remember_step(self.session, action, args, context, evidence.status)
                 completed_steps += 1
+                if self.progress is not None:
+                    self.progress.record(action, evidence.status == "verified")
+                    # Do not keep private text, paths, DOM ids, or credentials.
+                    self.session["long_task_progress"] = {
+                        "attempted": self.progress.total_attempts,
+                        "verified": self.progress.verified,
+                        "last_action": action,
+                        "status": self.progress.last_status,
+                    }
+                if self.autonomous and requires_stop_for_ambiguity(action, evidence.status):
+                    return self._finish("unverified", "操作結果が不明なため自律作業を停止しました。再実行せず画面を確認してください")
                 if evidence.status != "verified" and action in {"browser_click", "windows_click"}:
                     pending_verification = (len(history) - 1, context)
                 if self.stop_event.is_set():
@@ -444,8 +499,10 @@ class VoiceAgent:
             except Exception as e:
                 if self.stop_event.is_set():
                     return self._finish("interrupted", "操作を中止しました。直前の操作は実行された可能性があります")
-                self.log(f"操作エラー: {e}")
+                self.log(f"操作エラー: {type(e).__name__}" if self.autonomous else f"操作エラー: {e}")
                 history.append({"action": action, "args": args, "error": str(e)[:200]})
+                if self.autonomous:
+                    return self._finish("incomplete", "操作の失敗が確認されたため、自律作業を安全停止しました")
                 if sum("error" in h for h in history) >= 3:
                     return self._finish("error", "連続エラーのため停止しました")
         return self._finish("incomplete", "操作数の上限に達したため停止しました。続きを指示してください。")

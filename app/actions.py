@@ -125,6 +125,11 @@ def validate_action(data: dict) -> tuple[str, dict, str]:
             address = None
         if address is not None and not address.is_global:
             raise ValueError('ローカル・プライベートIPへのブラウザ接続は許可していません')
+        # Browsers may interpret shortened, octal or hexadecimal IPv4 hosts
+        # as localhost even when Python ipaddress does not parse them.
+        parts = hostname.split('.')
+        if all(re.fullmatch(r'(?:[0-9]+|0[xX][0-9a-fA-F]+)', part) for part in parts):
+            raise ValueError('数値表記によるローカルアドレスの迂回は許可していません')
     if name in {"screen_click", "screen_double_click", "screen_drag"}:
         coordinates = ("x", "y", "to_x", "to_y") if name == "screen_drag" else ("x", "y")
         for coordinate in coordinates:
