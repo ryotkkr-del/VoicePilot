@@ -61,6 +61,14 @@ async function activeTab() {
 // wholesale. IDs are short-lived element handles in the current document.
 function pageOperation(operation, params) {
   const selector = 'a[href],button,input,textarea,select,[role="button"],[role="link"],[role="textbox"],[role="searchbox"],[role="tab"],[role="menuitem"],[role="checkbox"],[contenteditable="true"],[tabindex]';
+  // Recheck in the tab's own execution world, right before any page mutation.
+  // Python's foreground check can go stale while a WebSocket request travels.
+  if (['browser_click', 'browser_fill', 'browser_scroll', 'dictation_insert'].includes(operation)) {
+    if ((typeof document.hasFocus === 'function' && !document.hasFocus()) ||
+        (typeof document.visibilityState === 'string' && document.visibilityState !== 'visible')) {
+      throw new Error('対象のタブが前面ではありません。操作前に画面を再確認してください');
+    }
+  }
   function sensitive(el) {
     // Accessible names can carry a sensitive meaning even if field metadata is generic.
     // The name is a label, never a value typed by the user.
@@ -354,6 +362,15 @@ function pageOperation(operation, params) {
 async function inject(tabId, operation, args) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !/^https?:\/\//.test(tab.url)) throw new Error('Chrome内部ページや特殊なタブは操作できません');
+  if (['browser_click', 'browser_fill', 'browser_scroll', 'dictation_insert'].includes(operation)) {
+    // An unrelated tab/window can gain focus between activeTab() and inject().
+    // Do not send the pending mutation to a now-background tab.
+    const now = await activeTab();
+    if (now.id !== tabId ||
+        (Number.isInteger(tab.windowId) && now.windowId !== tab.windowId)) {
+      throw new Error('タブまたはウィンドウが切り替わったため操作を中止しました');
+    }
+  }
   const result = await chrome.scripting.executeScript({target:{tabId}, func:pageOperation, args:[operation,args]});
   return result[0]?.result || {};
 }
@@ -467,7 +484,9 @@ async function perform(action, args) {
       const {page_key, ...publicPage} = page;
       return {...publicPage, tabs, document_ref:`${tab.id}:${snapshotPageKey}`};
     } catch(e) {
-      return {title:tab.title||'', url:tab.url?.split('?')[0]||'', tabs, error:String(e.message||e)};
+      // Exception bodies can include page-controlled text, secrets in a URL
+      // fragment, or sensitive tab titles. Never pass them into an AI context.
+      return {title:'', url:'', tabs:[], error:'Chromeの画面を取得できませんでした'};
     }
   }
   if (['browser_click','browser_fill','browser_scroll'].includes(action)) {
