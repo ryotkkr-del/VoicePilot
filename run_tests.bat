@@ -31,8 +31,14 @@ if errorlevel 1 goto failure
 :microphone
 echo.
 choice /C YN /N /M "ローカル音声認識も安全に試しますか？ (Y/N): "
-if errorlevel 2 goto done
+if errorlevel 2 goto benchmark
 ".venv\Scripts\python.exe" tests\windows_safety_check.py --interactive-microphone
+if errorlevel 1 goto failure
+:benchmark
+echo.
+choice /C YN /N /M "音声認識の3回ベンチマークも行いますか？ (Y/N): "
+if errorlevel 2 goto done
+".venv\Scripts\python.exe" tests\windows_safety_check.py --interactive-microphone-benchmark
 if errorlevel 1 goto failure
 :done
 echo テスト完了
