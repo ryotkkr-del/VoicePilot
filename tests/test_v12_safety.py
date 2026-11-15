@@ -122,6 +122,8 @@ class WindowsPrivacy(unittest.TestCase):
         controller = object.__new__(WindowsController)
         controller._foreground_hwnd = lambda: 101
         controller.active_window_title = lambda: "メモ帳"
+        # v0.22 blocks unknown Windows process identities; model a real Notepad.
+        controller._foreground_process_name = lambda: "notepad.exe"
         controller.is_chrome_foreground = lambda: False
         controller.allow_chrome_uia_fallback = False
         with patch.dict(sys.modules, {"pywinauto": fake_module}):
