@@ -3,6 +3,8 @@ name: Test and publish stable VoicePilot releases
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -35,6 +37,7 @@ jobs:
       - name: Build release archive
         run: python scripts/build_release.py
       - name: Publish only new version after successful tests
+        if: github.event_name != 'pull_request'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
