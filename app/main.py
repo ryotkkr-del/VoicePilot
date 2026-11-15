@@ -792,7 +792,7 @@ class VoicePilotApp:
         if (not self.busy and not self.recording and self.recognizer is not None
                 and self._last_transcription_finished > 0
                 and time.monotonic() - self._last_transcription_finished >=
-                speech_model_idle_seconds(self.recognizer.model_name)):
+                speech_model_idle_seconds(getattr(self.recognizer, "model_name", "small"))):
             stale, self.recognizer = self.recognizer, None
             def unload(recognizer):
                 recognizer.model = None
