@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "VoicePilot — Voice Browser Control",
-  "version": "0.23.7",
+  "version": "0.23.8",
   "description": "Paired local desktop voice agent for Chrome. No remote servers in this extension.",
   "minimum_chrome_version": "116",
   "permissions": [

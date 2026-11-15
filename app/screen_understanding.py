@@ -33,8 +33,9 @@ def _limited_string(value: object, limit: int = 130) -> str:
     return str(value or "").replace("\x00", "").strip()[:limit]
 
 
-def screen_context(context: dict, excerpt: dict | None, pointer: dict | None) -> dict:
-    """Allowlist what a read-only question may send to the model."""
+def screen_context(context: dict, excerpt: dict | None, pointer: dict | None,
+                   *, cloud: bool = False) -> dict:
+    """Allowlist on-screen observations; never forward unrelated windows to cloud."""
     output: dict = {}
     browser = context.get("browser")
     if isinstance(browser, dict):
@@ -51,14 +52,17 @@ def screen_context(context: dict, excerpt: dict | None, pointer: dict | None) ->
     if isinstance(windows, dict):
         output["windows"] = {
             "active_title": _limited_string(windows.get("active_title")),
-            "open_windows": [_limited_string(w.get("title"), 100)
-                             for w in (windows.get("windows") or [])[:12]
-                             if isinstance(w, dict)],
             "controls": [{"type": _limited_string(e.get("type"), 32),
                           "name": _limited_string(e.get("name"), 80)}
                          for e in (windows.get("controls") or [])[:35]
                          if isinstance(e, dict) and e.get("type") != "Edit"],
         }
+        if not cloud:
+            output["windows"]["open_windows"] = [
+                _limited_string(w.get("title"), 100)
+                for w in (windows.get("windows") or [])[:12]
+                if isinstance(w, dict)
+            ]
     if isinstance(excerpt, dict):
         output["visible_web_text"] = [_limited_string(s, 340)
                                       for s in (excerpt.get("blocks") or [])[:16]]
@@ -105,7 +109,9 @@ class ScreenAssistant:
                 pointer = self.windows.pointer_control()
             except (OSError, RuntimeError, ValueError):
                 pass
-        observation = screen_context(context, excerpt, pointer)
+        observation = screen_context(
+            context, excerpt, pointer, cloud=self.planner.provider == "gemini"
+        )
         if self.stop_event.is_set():
             raise InterruptedError("説明を中止しました")
         screenshot = None

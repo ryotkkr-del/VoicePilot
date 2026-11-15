@@ -392,7 +392,16 @@ class VoiceAgent:
         """
         proposed_history = history
         for attempt in range(2):
-            raw = self.planner.next_action(instruction, context, proposed_history, image)
+            # Previous action args can contain a full browser_fill text, file
+            # path or other private content. Fresh screen observations are
+            # enough to decide next steps when using a cloud planner.
+            model_history = (
+                [{"action": h.get("action"), "verification": h.get("verification"),
+                  **({"error": "invalid_proposal"} if h.get("error") else {})}
+                 for h in proposed_history]
+                if self.planner.provider == "gemini" else proposed_history
+            )
+            raw = self.planner.next_action(instruction, context, model_history, image)
             try:
                 return validate_action(raw)
             except (ValueError, TypeError) as exc:
@@ -401,7 +410,7 @@ class VoiceAgent:
                 self.log("操作候補の形式が不正なため、一度だけ再確認しています")
                 proposed_history = history[-5:] + [{
                     "action": "invalid_proposal",
-                    "error": str(exc)[:100],
+                    "error": "invalid_format",
                     "requirement": "許可された操作名と必要な文字列引数を含むJSONだけ返す",
                 }]
         raise RuntimeError("有効な操作候補を取得できませんでした")

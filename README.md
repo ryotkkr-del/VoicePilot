@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.8: P0 screen disclosure minimization and Windows archive path validation
+
+Cloud screen explanations no longer include unrelated background Windows titles. Subsequent Gemini planning calls omit earlier action argument bodies, including file paths and form text; current observed task context and safety validation are retained. The local Ollama path is unchanged. Screen descriptions can still contain the currently visible page text and screenshots if their separate cloud permissions are enabled.
+
+The updater's ZIP path validation now rejects Win32 reserved device names, alternate data stream colons, trailing spaces/dots, and case-insensitive name collisions **before extraction**. Offline tests use dummy secrets and adversarial archive names.
+
+**Migration caveat:** The stable `voicepilot_bootstrap.py` is deliberately never self-replaced during automatic updates. Existing installs running an older bootstrap do not automatically gain the new ZIP path checks. A secure bootstrap migration / pinned developer signature is still required before go-live; this is not a signed or fully trusted update system. Hardware and failure-recovery tests remain outstanding.
+
 ## v0.23.7: minimize cloud context and reject stale Chrome tab reads/actions (P0)
 
 For Gemini, omit unrelated previous instructions, previously discovered file paths, and historical target descriptions from the model prompt. Other Chrome tab titles or Windows window lists are excluded unless the current instruction expressly requests a tab/window switch. The original in-memory snapshot is preserved for local validation; the local Ollama path retains previous context behavior. This intentionally reduces context-dependent cloud functionality to avoid transmitting older unrelated private data.
