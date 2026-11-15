@@ -4,10 +4,12 @@ from __future__ import annotations
 import threading
 import unittest
 from pathlib import Path
+import sys
 from unittest.mock import Mock, patch
 
 from app.agent import VoiceAgent
-from tests import windows_safety_check as diag
+sys.path.insert(0, str(Path(__file__).parent))
+import windows_safety_check as diag
 
 
 class MicrophoneBenchmarkTests(unittest.TestCase):
