@@ -315,7 +315,7 @@ class VoicePilotApp:
         logbar=tk.Frame(shell,bg=BG)
         logbar.pack(fill="x",pady=(12,6))
         tk.Label(logbar,text="操作ログ",font=(FONT,10,"bold"),bg=BG,fg=INK).pack(side="left")
-        tk.Label(logbar,text="音声・実行結果を表示（ファイル保存しません）",font=(FONT,8),bg=BG,fg=MUTED).pack(side="right")
+        tk.Label(logbar,text="操作状況のみ記録（指示本文は非表示）",font=(FONT,8),bg=BG,fg=MUTED).pack(side="right")
         self.log_box=tk.Text(shell,height=8,wrap="word",bg=WHITE,fg=INK,relief="flat",
                              font=(FONT,10),padx=12,pady=10,borderwidth=0)
         self.log_box.pack(fill="both",expand=True)
@@ -854,7 +854,7 @@ class VoicePilotApp:
                     outcome = self._run_dictation_command(command)
                 else:
                     self.show_transcript(command)
-                    self.log(f"あなた：{command}")
+                    self.log("指示を受け付けました（本文は操作ログに残しません）")
                     outcome=self._run_agent(command,runtime)
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             verified_action=outcome.verified_action if finish_stage == "completed" else None
@@ -1009,7 +1009,7 @@ class VoicePilotApp:
         if self.dictation_target or dictation_intent(command, False):
             self.log("文章入力：文字列はログに保存しません")
         else:
-            self.log(f"あなた：{command}")
+            self.log("指示を受け付けました（本文は操作ログに残しません）")
         self.set_phase("acting")
         threading.Thread(target=self.run_text_task,args=(command,runtime),daemon=True).start()
 
