@@ -21,6 +21,10 @@ from .task_policy import LongTaskLimits, TaskProgress, EFFECTFUL_ACTIONS, requir
 
 # Sending these operations twice can submit forms, duplicate typing, or move
 # files twice. Each distinct proposed effect is attempted at most once per run.
+# These synthetic inputs target whichever window currently has focus.
+# An LLM decision or approval dialog can outlive the original target.
+FOREGROUND_BOUND = frozenset({"windows_hotkey", "windows_scroll", "windows_type"})
+
 NON_REPEATABLE = frozenset({
     "browser_click", "browser_fill", "windows_click", "windows_fill",
     "windows_type", "screen_click", "screen_double_click",
@@ -56,6 +60,7 @@ class VoiceAgent:
         self.session = session if session is not None else {}
         self._found_paths = set(self.session.get("recent_files", []))
         self._fast_outcome: RunOutcome | None = None
+        self._expected_input_hwnd: int | None = None
 
     def _may_act(self) -> bool:
         if self.stop_event.is_set():
@@ -168,6 +173,11 @@ class VoiceAgent:
         # This cannot roll back actions already in progress.
         if self.stop_event.is_set():
             raise InterruptedError("中止済みの操作は実行しません")
+        if action in FOREGROUND_BOUND and self._expected_input_hwnd is not None:
+            # Recheck at the very last dispatch boundary. Checking only before
+            # the confirmation dialog is insufficient: focus may have changed.
+            if self.windows.foreground_hwnd() != self._expected_input_hwnd:
+                raise RuntimeError("操作するウィンドウが変わったため入力を中止しました")
         if action in {"screen_click", "screen_double_click", "screen_drag"}:
             if self._frame is None:
                 raise ValueError("画像がありません")
@@ -244,6 +254,12 @@ class VoiceAgent:
         if action in {"browser_back", "browser_forward"} and not self.windows.is_chrome_foreground():
             return False  # Ambiguous: route through the planner instead.
         validate_action({"action": action, "args": args})
+        # Pin the original foreground before a confirmation popup can steal it.
+        # Fast commands do not have the regular UI snapshot to refer to.
+        fast_hwnd = self.windows.foreground_hwnd() if action in FOREGROUND_BOUND else None
+        if action in FOREGROUND_BOUND and (not isinstance(fast_hwnd, int) or fast_hwnd <= 0):
+            self._fast_outcome = self._finish("incomplete", "入力先のウィンドウが確認できません")
+            return True
         if action == "windows_hotkey" and args["keys"] in {"ctrl+v", "ctrl+z"}:
             # Keep the deterministic fast path aligned with planner approvals.
             # Undo can discard the user's own edits, not just VoicePilot's last
@@ -259,7 +275,11 @@ class VoiceAgent:
             self._fast_outcome = self._finish("interrupted", "操作を中止しました")
             return True
         self.log("高速操作（AI通信なし）")
-        result = self._execute(action, args)
+        self._expected_input_hwnd = fast_hwnd
+        try:
+            result = self._execute(action, args)
+        finally:
+            self._expected_input_hwnd = None
         if self.stop_event.is_set():
             self._fast_outcome = self._finish("interrupted", "中止しました。直前の操作は実行された可能性があります")
             return True
@@ -493,7 +513,17 @@ class VoiceAgent:
                     attempted_effects.add(key)  # count ambiguous failures as attempts
                 if self.autonomous and action in EFFECTFUL_ACTIONS:
                     effect_count += 1
-                result = self._execute(action, args)
+                # Bind any keyboard/scroll/type effect to the *observed*
+                # window, not merely whichever safe app now has focus.
+                if action in FOREGROUND_BOUND:
+                    observed = (context.get("windows") or {}).get("window_ref")
+                    if not isinstance(observed, str) or not observed.isdecimal() or int(observed) <= 0:
+                        return self._finish("incomplete", "操作対象ウィンドウを特定できません。もう一度指示してください")
+                    self._expected_input_hwnd = int(observed)
+                try:
+                    result = self._execute(action, args)
+                finally:
+                    self._expected_input_hwnd = None
                 try:
                     evidence = assess(action, args, result, self.windows)
                 except Exception:
