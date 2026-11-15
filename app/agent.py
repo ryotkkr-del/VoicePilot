@@ -40,16 +40,22 @@ class VoiceAgent:
     def __init__(self, bridge, windows: WindowsController, planner: Planner,
                  log: Callable[[str], None], confirm: Callable[[str], bool],
                  allow_cloud_ui: bool, stop_event, max_steps: int = 10,
-                 session: dict | None = None, allow_cloud_image: bool = False):
+                 session: dict | None = None, allow_cloud_image: bool = False, action_gate=None):
         self.bridge, self.windows, self.planner = bridge, windows, planner
         self.log, self.confirm = log, confirm
         self.allow_cloud_ui, self.stop_event = allow_cloud_ui, stop_event
         self.max_steps = max(1, min(16, max_steps))
         self.allow_cloud_image = allow_cloud_image
+        self.action_gate = action_gate  # optional pause/resume checkpoint
         self._frame: ScreenFrame | None = None
         self.session = session if session is not None else {}
         self._found_paths = set(self.session.get("recent_files", []))
         self._fast_outcome: RunOutcome | None = None
+
+    def _may_act(self) -> bool:
+        if self.stop_event.is_set():
+            return False
+        return self.action_gate is None or self.action_gate.checkpoint(self.stop_event)
 
     def _finish(self, status: str, summary: str,
                 verified_action: str | None = None) -> RunOutcome:
@@ -225,7 +231,7 @@ class VoiceAgent:
             if not self.confirm("現在のウィンドウにクリップボードの内容を貼り付けますか？"):
                 self._fast_outcome = self._finish("interrupted", "貼り付けをキャンセルしました")
                 return True
-        if self.stop_event.is_set():
+        if not self._may_act():
             self._fast_outcome = self._finish("interrupted", "操作を中止しました")
             return True
         self.log("高速操作（AI通信なし）")
@@ -278,7 +284,7 @@ class VoiceAgent:
                 if not self.confirm("次の操作を許可しますか？\n\n" + approval_summary(action, args, context)):
                     self._fast_outcome = self._finish("interrupted", "承認されなかったため中止しました")
                     return True
-            if self.stop_event.is_set():
+            if not self._may_act():
                 self._fast_outcome = self._finish("interrupted", "操作を中止しました")
                 return True
             result = self._execute(action, args)
@@ -340,10 +346,12 @@ class VoiceAgent:
         start = time.monotonic()
         pending_verification: tuple[int, dict] | None = None
         for index in range(self.max_steps):
-            if self.stop_event.is_set():
+            if not self._may_act():
                 return self._finish("interrupted", "操作を中止しました")
-            if time.monotonic() - start > 100:
+            pause_seconds = self.action_gate.paused_seconds() if self.action_gate else 0.0
+            if time.monotonic() - start - pause_seconds > 100:
                 return self._finish("incomplete", "処理時間の上限に達したため停止しました")
+            pause_generation = (self.action_gate.pause_generation if self.action_gate else 0)
             context = self._context()
             if pending_verification is not None:
                 step_index, before = pending_verification
@@ -361,8 +369,12 @@ class VoiceAgent:
                 if self.stop_event.is_set():
                     return self._finish("interrupted", "操作を中止しました")
                 return self._finish("incomplete", "AIの操作指示を安全に解釈できなかったため停止しました")
-            if self.stop_event.is_set():
+            if not self._may_act():
                 return self._finish("interrupted", "操作を中止しました")
+            if self.action_gate and self.action_gate.pause_generation != pause_generation:
+                self.log("再開後に画面を再確認して操作を選び直します")
+                self._frame = None
+                continue
             if action == "done":
                 if completed_steps == 0:
                     # Preserve a useful clarification from the planner.  It is only
@@ -407,8 +419,12 @@ class VoiceAgent:
                     detail = approval_summary(action, args, context)
                     if not self.confirm(f"次の操作を許可しますか？\n\n{detail}"):
                         return self._finish("interrupted", "承認されなかったため中止しました")
-                if self.stop_event.is_set():
+                if not self._may_act():
                     return self._finish("interrupted", "操作を中止しました")
+                if self.action_gate and self.action_gate.pause_generation != pause_generation:
+                    self.log("停止前の操作候補は使わず、現在の画面を調べ直します")
+                    self._frame = None
+                    continue
                 if non_repeatable:
                     attempted_effects.add(key)  # count ambiguous failures as attempts
                 result = self._execute(action, args)

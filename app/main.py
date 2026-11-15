@@ -26,6 +26,7 @@ from .voice_feedback import SpeechFeedback, result_announcement
 from .chatgpt_handoff import extract_chatgpt_request, prepare_chatgpt_handoff
 from .dictation import DictationController, dictation_intent, DictationError, DictationTarget
 from .handsfree import HandsFreeSession, handsfree_control
+from .interrupt import ActionGate, VoiceInterruptMonitor
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "VoicePilot"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -94,6 +95,8 @@ class VoicePilotApp:
         # Opt-in and volatile by design: NEVER enable the microphone on startup.
         self.handsfree = HandsFreeSession()
         self._handsfree_capture = False
+        self._interrupt_monitor: VoiceInterruptMonitor | None = None
+        self._action_gate: ActionGate | None = None
         self._capture_generation = 0
         self._closing = False
         self.session = {"recent_instructions": [], "recent_files": []}  # RAM only; never written to disk
@@ -510,7 +513,12 @@ class VoicePilotApp:
             self.status_label.configure(text="ハンズフリー待受中", fg="#15803D")
             self.status_hint.configure(text=hint)
         elif hf_on and self.busy:
-            hint = "処理中：マイクを休止しています（終了後に再開）"
+            gate = getattr(self, "_action_gate", None)
+            if gate is not None and gate.paused:
+                hint = "一時停止中：「続けて」で再開／「やめて」で中止"
+                self.status_label.configure(text="音声で一時停止中", fg="#A16207")
+            else:
+                hint = "操作中も「待って」「やめて」で割り込みできます"
             self.status_hint.configure(text=hint)
         if self.dictation_target and not self.busy and not recording:
             hint = "文章入力中：Ctrl+Alt+Spaceで話す／「入力終了」で解除"
@@ -569,7 +577,7 @@ class VoicePilotApp:
             return
         self.handsfree.start()
         self.stop_event.clear()
-        self.log("ハンズフリー開始。音声で連続指示できます。終了は「ハンズフリー終了」かボタンです")
+        self.log("ハンズフリー開始。作業中は「待って」「続けて」「やめて」で制御できます")
         self._apply_phase()
         self._schedule_handsfree_resume()
 
@@ -578,6 +586,12 @@ class VoicePilotApp:
         if not self.handsfree.enabled:
             return
         self.handsfree.stop()
+        monitor = getattr(self, "_interrupt_monitor", None)
+        if monitor is not None:
+            monitor.request_stop()
+        gate = getattr(self, "_action_gate", None)
+        if gate is not None:
+            gate.resume()  # disabling listening must not strand a paused worker
         if self.recording and self._handsfree_capture:
             self._stop_record(discard=True)
         self._handsfree_capture = False
@@ -1001,6 +1015,27 @@ class VoicePilotApp:
         self.ui.post(show)
         return finished.wait(timeout=90) and bool(result and result[0])
 
+    def _handle_voice_interrupt(self, intent: str, gate: ActionGate):
+        """Called on the interrupt microphone worker, never directly on Tk."""
+        if self.stop_event.is_set() or getattr(self, "_closing", False):
+            return
+        if intent == "pause":
+            gate.pause()
+            self.ui.post(lambda: (self.log("一時停止しました。「続けて」で再開できます"),
+                                  self._apply_phase()))
+        elif intent == "resume":
+            gate.resume()
+            self.ui.post(lambda: (self.log("音声で作業を再開しました"), self._apply_phase()))
+        elif intent in {"cancel", "end"}:
+            # Cancellation is cooperative: an in-flight Windows/UIA/LLM call
+            # may already have committed. Do not advertise an instant rollback.
+            self.stop_event.set()
+            gate.resume()
+            if intent == "end":
+                self.handsfree.stop()  # invalidate scheduled rearm
+            self.ui.post(lambda: (self.log("音声で中止を要求しました。進行中の操作は完了済みの可能性があります"),
+                                  self._apply_phase()))
+
     def _run_agent(self,command,runtime):
         self.set_phase("acting")
         addressed = extract_chatgpt_request(command)
@@ -1008,10 +1043,34 @@ class VoicePilotApp:
             return self._run_chatgpt(addressed)
         self.restore_target()
         planner=Planner(runtime["provider"],runtime["key"],runtime["gemini_model"],runtime["ollama_model"])
-        agent=VoiceAgent(self.bridge,self.windows,planner,self.log,self.confirm,
-                         runtime["allow_cloud_ui"],self.stop_event,max_steps=12,
-                         session=self.session,allow_cloud_image=runtime["allow_cloud_image"])
-        return agent.run(command)
+        gate = None
+        monitor = None
+        # Never open a background microphone without explicit hands-free opt-in.
+        if self.handsfree.enabled and self.recognizer is not None:
+            gate = ActionGate()
+            self._action_gate = gate
+            monitor = VoiceInterruptMonitor(
+                recognize=self.recognizer.transcribe,
+                on_intent=lambda intent: self._handle_voice_interrupt(intent, gate),
+                gate=gate,
+                on_error=lambda message: self.log(message),
+            )
+            self._interrupt_monitor = monitor
+            monitor.start()
+        try:
+            agent=VoiceAgent(self.bridge,self.windows,planner,self.log,self.confirm,
+                             runtime["allow_cloud_ui"],self.stop_event,max_steps=12,
+                             session=self.session,allow_cloud_image=runtime["allow_cloud_image"],
+                             action_gate=gate)
+            return agent.run(command)
+        finally:
+            # The regular microphone must not resume until this monitor has
+            # been asked to stop and the previous task has exited.
+            if monitor is not None:
+                monitor.close()
+            if getattr(self, "_interrupt_monitor", None) is monitor:
+                self._interrupt_monitor = None
+                self._action_gate = None
 
     def abort(self, *, keep_record_request=False):
         self.speaker.stop()
@@ -1026,6 +1085,12 @@ class VoicePilotApp:
                 self.log("文章入力モードを終了しました")
             return
         self.stop_event.set()
+        gate = getattr(self, "_action_gate", None)
+        if gate is not None:
+            gate.resume()
+        monitor = getattr(self, "_interrupt_monitor", None)
+        if monitor is not None:
+            monitor.request_stop()
         if not keep_record_request and getattr(self, "dictation_target", None) is not None:
             self.dictation_target = None
         if self.recording:
@@ -1037,6 +1102,12 @@ class VoicePilotApp:
     def close(self):
         self._closing = True
         self.handsfree.stop()
+        monitor = getattr(self, "_interrupt_monitor", None)
+        if monitor is not None:
+            monitor.request_stop()
+        gate = getattr(self, "_action_gate", None)
+        if gate is not None:
+            gate.resume()
         self._record_after_cancel = False
         self.dictation_target = None
         self.speaker.close()

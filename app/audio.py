@@ -87,7 +87,8 @@ class Microphone:
             elapsed = time.monotonic() - self._started if self._stream else 0.0
             silence = (time.monotonic() - self._last_voice) if self._heard_voice else 0.0
             return {"elapsed": elapsed, "heard_voice": self._heard_voice,
-                    "silence": silence, "level": self._latest_rms, "threshold": self._threshold}
+                    "silence": silence, "level": self._latest_rms, "threshold": self._threshold,
+                    "speech_elapsed": (time.monotonic() - self._first_voice) if self._heard_voice else 0.0}
 
     def stop(self) -> np.ndarray:
         if not self._stream:

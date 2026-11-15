@@ -17,14 +17,16 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 - **v0.18: opt-in sequential hands-free sessions** — click **ハンズフリー開始** once, then speak multiple separate commands without pressing the hotkey each time. The microphone pauses during transcription, UI operations, and SAPI voice feedback, then rearms when quiet. Stop by saying **ハンズフリー終了** or using the stop button. Sessions time out after three minutes without a recognized utterance and do not survive restart. No external voice API, wake-word listener, or extra inference model is required.
 
-## Hands-free listening (v0.18)
+## Hands-free listening (v0.19)
 
 1. Start VoicePilot and click **ハンズフリー開始** (or **連続ON** in the compact view).
 2. Speak commands one at a time, leaving a short silence between utterances. The existing local Whisper model converts speech into instructions; existing confirmation rules still apply.
 3. After an action finishes and voice feedback ends, VoicePilot automatically listens for the next utterance. Dictation mode may be used within a hands-free session.
 4. Say **ハンズフリー終了**, click **ハンズフリー終了**, or use **停止** to stop. An inactive session shuts down after 3 minutes.
 
-**Limits:** This is **sequential** hands-free, not a continuously listening wake-word assistant. Voice input is intentionally suspended **while the current command runs**, so spoken interruptions during a long task cannot be processed; `Ctrl+Alt+Esc` remains available to abort. The microphone uses bounded audio buffering and a low-cost energy threshold, not a separate learned VAD. It can still detect environmental speech or misrecognize audio; do not rely on it for unattended high-impact actions. For speaker echo protection, listening resumes only after built-in spoken feedback is finished; headphones are recommended when other audio is playing. Physical Windows microphone and application interoperability have not yet been verified.
+**v0.19: Voice interruption during PC tasks.** While an explicitly enabled hands-free task is executing, a separate local microphone listens only for short control phrases: **待って** pauses at the next action boundary, **続けて** resumes, and **やめて** requests cancellation. **ハンズフリー終了** ends listening and cancels. These commands cannot undo already executed actions or force a currently blocking Windows/API call to stop instantly. A pause times out after 120 seconds. `Ctrl+Alt+Esc` remains an immediate keyboard fallback.
+
+**Limits:** This is not a continuously listening wake-word assistant. A secondary microphone stream runs only during an opted-in active task, and only recognized whole-phrase controls can affect it. Other spoken words during execution are ignored. The microphone uses bounded audio buffering and a low-cost energy threshold, not a separate learned VAD. It can still detect environmental speech or misrecognize audio; do not rely on it for unattended high-impact actions. For speaker echo protection, listening resumes only after built-in spoken feedback is finished; headphones are recommended when other audio is playing. Physical Windows microphone and application interoperability have not yet been verified.
 
 ## Voice typing (v0.17)
 
@@ -59,7 +61,7 @@ Run `run_tests.bat` on Windows. Python and Node.js are required for the complete
 
 ## Documentation
 
-See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.18.
+See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.19.
 
 ## Security and permissions
 
