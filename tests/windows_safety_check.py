@@ -251,4 +251,11 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Windows hosts sometimes use a legacy codepage (e.g. cp1252).
+    # Print predictable UTF-8 diagnostics instead of crashing on Japanese text.
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
     raise SystemExit(main())
