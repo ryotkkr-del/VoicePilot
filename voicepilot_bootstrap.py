@@ -464,6 +464,16 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
         except Exception as restore_error:
             # Never discard the journal when recovery is incomplete.
             raise UpdateError("更新後の復元に失敗しました。起動せず復旧してください") from restore_error
+        # An interrupted or faulty metadata write might have replaced
+        # last_good just before reporting an error. After restoring the old
+        # source, that new record must never remain a valid rollback marker.
+        if prior.exists():
+            try:
+                if _read_json(prior).get("backup") == backup_id:
+                    prior.unlink()
+            except (OSError, ValueError, UpdateError):
+                # Keep the journal if recovery metadata cannot be inspected.
+                raise UpdateError("更新記録が不正なため起動を停止しました") from exc
         (cache / "journal.json").unlink(missing_ok=True)
         raise UpdateError("更新失敗のため旧版を復元しました") from exc
     (cache / "journal.json").unlink(missing_ok=True)
