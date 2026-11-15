@@ -102,7 +102,14 @@ class RecoveryTests(unittest.TestCase):
         failed = [False]
 
         def fail_once(source, target):
-            if Path(target) == self.root / "requirements.txt" and not failed[0]:
+            # Match the actual updater replacement, rather than assuming
+            # TemporaryDirectory and root.resolve() use identical spelling on
+            # every Windows runner.
+            dest = Path(target)
+            source_path = Path(source)
+            if (dest.name.casefold() == "requirements.txt"
+                    and source_path.name.startswith(".vp-update-")
+                    and not failed[0]):
                 failed[0] = True
                 raise OSError("simulated write failure")
             return original_replace(source, target)
