@@ -205,6 +205,49 @@ class RecoveryTests(unittest.TestCase):
                     ])
         self.assert_old_intact()
 
+    def test_stage_modified_after_preflight_never_installs_tampered_bytes(self):
+        self.stage()
+        original_copy = updater.shutil.copyfile
+        tampered = [False]
+
+        def tamper_before_copy(source, destination, *args, **kwargs):
+            source_path = Path(source)
+            if (source_path.name == "main.py" and "stage-" in str(source_path)
+                    and not tampered[0]):
+                source_path.write_text("tampered after preflight", encoding="utf-8")
+                tampered[0] = True
+            return original_copy(source, destination, *args, **kwargs)
+
+        with patch.object(updater.shutil, "copyfile", side_effect=tamper_before_copy):
+            with self.assertRaisesRegex(updater.UpdateError, "旧版を復元"):
+                updater.apply_pending(self.root, self.cache)
+        self.assertTrue(tampered[0])
+        self.assert_old_intact()
+
+    def test_commit_written_then_reports_failure_does_not_leave_stale_rollback(self):
+        self.stage()
+        original_atomic = updater._atomic_json
+
+        def commit_then_raise(path, data):
+            original_atomic(path, data)
+            if Path(path).name == "last_good.json":
+                raise OSError("simulated exception immediately after commit rename")
+
+        with patch.object(updater, "_atomic_json", side_effect=commit_then_raise):
+            with self.assertRaisesRegex(updater.UpdateError, "旧版を復元"):
+                updater.apply_pending(self.root, self.cache)
+        self.assert_old_intact()
+        self.assertFalse((self.cache / "last_good.json").exists())
+        self.assertFalse((self.cache / "journal.json").exists())
+
+    def test_app_exposes_old_updater_revision_without_silent_upgrade(self):
+        from app.main import bootstrap_security_revision
+        with patch.object(updater, "BOOTSTRAP_SECURITY_REVISION", 0):
+            self.assertEqual(bootstrap_security_revision(), 0)
+        self.assertGreaterEqual(bootstrap_security_revision(), 2)
+        # Older installations can still run the app, but see the warning.
+        # This check never modifies the bootstrap or auto-installs one.
+
     def test_backup_symlink_rejected_if_supported_by_runner(self):
         self.stage()
         self.assertEqual(updater.apply_pending(self.root, self.cache), "applied")
