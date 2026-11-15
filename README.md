@@ -6,6 +6,16 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23: safer screen context + opt-in local microphone diagnostic
+
+**Privacy fix:** In v0.22, foreground terminal/admin/unknown processes were denied UIA tree traversal but could still leak their window title and the titles of other open apps into the AI context. Now protected snapshots and quick-state observations return **no titles, controls or window identifiers**; the title enumerator is not even invoked for denied foregrounds. If the foreground changes during UIA scanning or the Chrome-DOM fallback, the partial snapshot is discarded and cached control targets are cleared.
+
+**Wrong-target fix:** Screen explanations re-check the foreground immediately before the AI provider call, **including Gemini text-only mode**. Browser page edits/navigation (click/fill/scroll/back/forward/tab switch) refuse to run after Chrome loses foreground; explicit open/search still work. This reduces unintended cross-app actions without claiming to eliminate time-of-check/time-of-use races.
+
+**Hardware diagnostics:** `run_tests.bat` now offers two *separate opt-in* exercises: the scratch-only Notepad input test from v0.22 and a new microphone-to-local-Whisper test. The microphone test requires the user to type `YES`, captures at most eight seconds into RAM, and checks one fixed phrase without printing or saving the recognized transcript or issuing an AI command. Its elapsed recognition time is reported locally. **Both tests are disabled unless the user actively opts in.** Initial model download may require internet; the recorded audio is not uploaded.
+
+The standard CI suite runs **255 Python unit tests** (one Windows-only test skipped on Linux) and Chrome JavaScript tests; it does not conduct real microphone or desktop automation on the user's PC. The physical-laptop tests still require user initiation and review. No new paid services, elevation, file deletion, arbitrary shell commands, or unrestricted AI permissions were added. Signed update authenticity and full isolation remain unimplemented.
+
 ## v0.22: Windows safety verification and fail-closed desktop boundaries
 
 **Security fixes:** Chrome foreground detection checks the actual process executable (`chrome.exe`), rather than a spoofable window title. Elevated VoicePilot instances are refused at app startup; synthetic input also checks privilege before acting. The agent and read-only screen assistant reject screenshots/accessible content from blocked or unidentifiable foreground processes, and discard frames if focus changes while a screenshot is captured. An interrupted view is never forwarded to a model as fallback text.
@@ -85,7 +95,7 @@ Run `run_tests.bat` on Windows. Python and Node.js are required for the complete
 
 ## Documentation
 
-See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.22.
+See [Japanese documentation / README_JA.md](README_JA.md) for functionality and update history through v0.23.
 
 ## Security and permissions
 

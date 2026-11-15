@@ -528,7 +528,10 @@ class WindowsController:
             raise PermissionError("保護対象の画面または管理者権限での画面取得は許可しません") from exc
 
     def quick_state(self) -> dict:
-        """Cheap postcondition probe, without touching the UIA tree."""
+        """Cheap postcondition probe; never disclose protected window titles."""
+        if os.name == "nt" and (current_process_elevated() or
+                is_unsafe_foreground(self.active_window_title(), self._foreground_process_name())):
+            return {"active_title": "", "windows": []}
         return {"active_title": self.active_window_title(),
                 "windows": visible_window_titles(limit=35)}
 
@@ -536,19 +539,32 @@ class WindowsController:
         # A Win32 title list is far cheaper than Desktop(...).windows().
         hwnd = self._foreground_hwnd()
         title = self.active_window_title()
-        result = {"windows": visible_window_titles(), "active_title": title[:120], "controls": [],
-                  "window_ref": str(hwnd) if hwnd else ""}
+        # In v0.22 the UI tree was blocked, but the window title and titles
+        # from *all* open windows were still returned to the AI. Deny BEFORE
+        # enumerating or serializing any of those titles.
         self._visible_controls = []
         self._visible_metadata = []
-        self._last_control_window = hwnd
+        self._last_control_window = None
         # Do not traverse Chrome's accessibility tree when the fast DOM bridge
         # is working.  If disconnected, use the same bounded UIA fallback as
         # other apps; a separate extension should not be required to try.
         # Do not enumerate a spoofed terminal's controls into the AI context.
         if os.name == "nt" and (current_process_elevated() or
                 is_unsafe_foreground(title, self._foreground_process_name())):
-            return result
+            return {"windows": [], "active_title": "", "controls": [], "window_ref": ""}
+        if os.name == "nt" and not hwnd:
+            return {"windows": [], "active_title": "", "controls": [], "window_ref": ""}
+        result = {"windows": visible_window_titles(), "active_title": title[:120], "controls": [],
+                  "window_ref": str(hwnd) if hwnd else ""}
+        self._last_control_window = hwnd
         if self.is_chrome_foreground() and not self.allow_chrome_uia_fallback:
+            # DOM is sufficient, but titles collected just above must still
+            # be dropped if the foreground changed during enumeration.
+            if os.name == "nt" and (self._foreground_hwnd() != hwnd or
+                    current_process_elevated() or
+                    is_unsafe_foreground(self.active_window_title(), self._foreground_process_name())):
+                self._last_control_window = None
+                return {"windows": [], "active_title": "", "controls": [], "window_ref": ""}
             return result
         try:
             from pywinauto import Desktop
@@ -596,6 +612,15 @@ class WindowsController:
             # UIA can be unavailable for elevated or custom-rendered windows;
             # the agent can then request a one-shot screenshot.
             pass
+        # A window switch during tree traversal can mix controls from two
+        # processes. Never expose or retain that partial snapshot.
+        if os.name == "nt" and (self._foreground_hwnd() != hwnd or
+                current_process_elevated() or
+                is_unsafe_foreground(self.active_window_title(), self._foreground_process_name())):
+            self._visible_controls = []
+            self._visible_metadata = []
+            self._last_control_window = None
+            return {"windows": [], "active_title": "", "controls": [], "window_ref": ""}
         return result
 
     def _check_fill_target(self, item) -> None:

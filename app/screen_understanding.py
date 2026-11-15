@@ -91,6 +91,7 @@ class ScreenAssistant:
         guard = getattr(self.windows, "assert_safe_observation", None)
         if guard is not None:
             guard()
+        start_hwnd = self.windows.foreground_hwnd()
         context = self.context_provider()
         excerpt = None
         if self.bridge.connected and self.windows.is_chrome_foreground():
@@ -129,6 +130,12 @@ class ScreenAssistant:
             raise RuntimeError("画面の情報を取得できませんでした")
         if self.stop_event.is_set():
             raise InterruptedError("説明を中止しました")
+        # Cloud text-only mode must be protected against a focus change too.
+        # This check happens immediately before any provider call.
+        if self.windows.foreground_hwnd() != start_hwnd:
+            raise PermissionError("画面の確認中に操作対象が変わりました。情報を破棄しました")
+        if guard is not None:
+            guard()
         answer = self.planner.explain_screen(question, observation, screenshot)
         if self.stop_event.is_set():
             raise InterruptedError("説明を中止しました")

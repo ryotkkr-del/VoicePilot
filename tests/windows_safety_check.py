@@ -11,6 +11,7 @@ file paths, screenshots, microphone data and user content.
 from __future__ import annotations
 
 import argparse
+import re
 import json
 import os
 import shutil
@@ -104,6 +105,64 @@ def readonly_win32_probe() -> None:
         raise AssertionError("invalid Chrome guard")
 
 
+def _voice_phrase_matches(transcript: str) -> bool:
+    """Only compare the spoken scratch phrase; never persist or print text."""
+    normalized = re.sub(r"[\s、。!！?？.,]+", "", transcript).casefold()
+    return normalized in {"音声のテストです", "音声テストです"}
+
+
+def interactive_microphone() -> str:
+    """Explicitly consented local mic->Whisper test; NEVER dispatch actions.
+
+    Audio and transcript exist in RAM only. No web API, screenshots, files,
+    PC automation or command execution is called from this function.
+    """
+    if os.name != "nt":
+        return "SKIP:Windows only"
+    if win.current_process_elevated():
+        return "FAIL:admin execution"
+    print("\n[任意] ローカルのマイクとWhisperだけを試します。PC操作は行いません。")
+    print("同意した場合だけ8秒間録音します。音声・認識文章は保存も送信もしません。")
+    print("開始したら『音声のテストです』と話してください。")
+    if input("録音を開始する場合だけ YES と入力してください: ").strip() != "YES":
+        return "SKIP:no consent"
+    from app.audio import Microphone, SpeechRecognizer
+    mic = Microphone()
+    recording = False
+    samples = None
+    try:
+        mic.start()
+        recording = True
+        started = time.monotonic()
+        heard = False
+        while time.monotonic() - started < 8.0:
+            time.sleep(0.15)
+            activity = mic.activity()
+            heard = heard or bool(activity.get("heard_voice", False))
+            if heard and (time.monotonic() - started >= 1.0) and float(activity.get("silence", 0.0)) >= 1.25:
+                break
+        samples = mic.stop()
+        recording = False
+        if not heard or samples.size < 1600:
+            return "FAIL:no speech detected"
+        recognized_at = time.monotonic()
+        # Same local model as the default app; no cloud API or planning agent.
+        recognized = SpeechRecognizer("small").transcribe(samples)
+        elapsed = time.monotonic() - recognized_at
+        # Do not log the transcript: only a fixed expected test phrase matters.
+        print(f"ローカル音声認識時間: {elapsed:.2f}秒（認識本文は非表示）")
+        return "PASS" if _voice_phrase_matches(recognized) else "FAIL:phrase mismatch"
+    except Exception as exc:
+        return "FAIL:" + type(exc).__name__
+    finally:
+        if recording:
+            try:
+                mic.stop()
+            except Exception:
+                pass
+        del samples
+
+
 def interactive_notepad() -> str:
     """Only if user agrees: launch a scratch Notepad then type one harmless line.
 
@@ -159,6 +218,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="VoicePilot scratch-only Windows safety diagnostics")
     parser.add_argument("--interactive-notepad", action="store_true",
                         help="Optional Notepad typing; asks explicit consent")
+    parser.add_argument("--interactive-microphone", action="store_true",
+                        help="Optional local Whisper mic test; asks explicit consent")
     args = parser.parse_args()
     checks = [
         ("privilege", privilege_guard),
@@ -179,8 +240,12 @@ def main() -> int:
         results["notepad_typing"] = interactive_notepad()
     elif args.interactive_notepad:
         results["notepad_typing"] = "SKIP:preflight failed"
+    if args.interactive_microphone and all(not v.startswith("FAIL") for v in results.values()):
+        results["local_microphone"] = interactive_microphone()
+    elif args.interactive_microphone:
+        results["local_microphone"] = "SKIP:preflight failed"
     print("\nVoicePilot Windows safety report (no private text captured)")
-    print(json.dumps({"version": "0.22.0", "os": "Windows" if os.name == "nt" else "Other",
+    print(json.dumps({"version": "0.23.0", "os": "Windows" if os.name == "nt" else "Other",
                       "results": results}, ensure_ascii=False, indent=2))
     return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 

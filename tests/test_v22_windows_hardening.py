@@ -85,7 +85,7 @@ class IdentityGuardTests(unittest.TestCase):
 
     def test_readonly_screenshot_is_discarded_after_focus_changes(self):
         windows = Mock(spec=WindowsController)
-        windows.foreground_hwnd.side_effect = [100, 200]
+        windows.foreground_hwnd.side_effect = [100, 100, 200]
         planner = Mock(provider="ollama")
         assistant = ScreenAssistant(
             bridge=Mock(connected=False), windows=windows, planner=planner,

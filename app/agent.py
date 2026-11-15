@@ -178,6 +178,13 @@ class VoiceAgent:
             self._frame = None  # one visual action per fresh observation
             return self.windows.click_point(x, y, double=action == "screen_double_click")
         if action.startswith("browser_"):
+            # Active-page edits must not silently run in a background Chrome tab
+            # if the user switched to another app while the LLM was reasoning.
+            # Explicit search/open operations may still activate Chrome.
+            if action in {"browser_click", "browser_fill", "browser_scroll",
+                          "browser_back", "browser_forward", "browser_switch_tab"}:
+                if not self.windows.is_chrome_foreground():
+                    raise RuntimeError("Chromeが前面でなくなったため、ブラウザ操作を中止しました")
             return self.bridge.call(action, args)
         if action.startswith("windows_"):
             return self.windows.act(action, args)
