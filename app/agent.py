@@ -163,6 +163,11 @@ class VoiceAgent:
         return False
 
     def _execute(self, action: str, args: dict):
+        # A cancellation can arrive between the planner checkpoint and the
+        # actual dispatch. Reject it at the final shared execution boundary.
+        # This cannot roll back actions already in progress.
+        if self.stop_event.is_set():
+            raise InterruptedError("中止済みの操作は実行しません")
         if action in {"screen_click", "screen_double_click", "screen_drag"}:
             if self._frame is None:
                 raise ValueError("画像がありません")
