@@ -126,7 +126,8 @@ class WindowsPrivacy(unittest.TestCase):
         controller._foreground_process_name = lambda: "notepad.exe"
         controller.is_chrome_foreground = lambda: False
         controller.allow_chrome_uia_fallback = False
-        with patch.dict(sys.modules, {"pywinauto": fake_module}):
+        with patch.dict(sys.modules, {"pywinauto": fake_module}), \
+             patch("app.win_actions.current_process_elevated", return_value=False):
             snapshot = controller.snapshot()
         self.assertEqual(len(snapshot["controls"]), 1)
         self.assertEqual(snapshot["controls"][0]["name"], "入力欄")
