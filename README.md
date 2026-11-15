@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.4: opt-in per-operation timings and local resource snapshots
+
+Open **Settings → 性能診断** to optionally log numeric timings for real VoicePilot commands. Voice commands report duration from **recording stop** to completion, including ASR and operation timing; text commands report worker runtime. Process-wide CPU time (seconds, **not CPU%**) and Windows current-process working set samples at start/end are included when available. Samples are not peaks and **exclude separate Ollama/Chrome processes**. No audio, transcripts, URLs or user content are added by these performance diagnostics, and there is no telemetry upload, diagnostic file, or background sampling. The normal pre-existing operation log is unchanged. Diagnostics default off.
+
+To shorten idle retention of larger locally loaded Whisper models, unused `medium` is unloaded after 45 seconds and `large-v3-turbo` after 30 seconds. `small` and `base` stay at 75 seconds. This is a memory-retention tradeoff, not measured CPU improvement; later utterances may need to reload the model. Allocator behavior may prevent an immediate RAM decrease.
+
+**Unverified:** actual laptop RAM savings, processing latency, CPU consumption, microphone recognition quality, and desktop success rate. CI tests exercise mocks and cannot substitute for hardware measurements.
+
 ## v0.23.3: opt-in measured speech check + final cancellation boundary
 
 Added a strictly optional, three-trial local Whisper microphone benchmark. The user must explicitly consent (`YES`); each phrase capture is bounded to eight seconds. It reports number of exact matches and warm-model inference time without saving/printing audio or recognized text, uploading personal content, or dispatching any PC action. The initial Whisper weights download may still require network access. Run `run_tests.bat` and opt in to the additional benchmark, or use `tests/windows_safety_check.py --interactive-microphone-benchmark` inside the app's Python environment. The previous one-trial diagnostic is preserved.

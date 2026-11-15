@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import gc
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ from .dictation import DictationController, dictation_intent, DictationError, Di
 from .handsfree import HandsFreeSession, handsfree_control
 from .interrupt import ActionGate, VoiceInterruptMonitor
 from .screen_understanding import ScreenAssistant, screen_question
+from .performance import OperationProfiler
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "VoicePilot"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -36,7 +38,7 @@ DEFAULTS = {
     "token": "", "provider": "ollama", "gemini_model": "gemini-2.5-flash",
     "ollama_model": "gemma3:4b", "whisper_model": "small", "allow_cloud_ui": False,
     "auto_stop": True, "silence_seconds": 1.4, "allow_cloud_image": False,
-    "voice_feedback": True,
+    "voice_feedback": True, "measure_performance": False,
 }
 BG, WHITE, INK = "#F6F7FA", "#FFFFFF", "#19222E"
 MUTED, ACCENT, BORDER = "#64748B", "#2563EB", "#E2E8F0"
@@ -44,6 +46,19 @@ FONT = "Yu Gothic UI"
 # Whisper is loaded on first use and released after inactivity.
 # This is a memory policy, not a reduction in speech recognition quality.
 SPEECH_MODEL_IDLE_SECONDS = 75
+
+
+def speech_model_idle_seconds(model_name: str) -> int:
+    """Unload very large unused speech models sooner to reduce idle RAM.
+
+    Frequent use still keeps the model loaded while an operation is running.
+    A later utterance after unloading needs a fresh model load.
+    """
+    if model_name == "large-v3-turbo":
+        return 30
+    if model_name == "medium":
+        return 45
+    return SPEECH_MODEL_IDLE_SECONDS
 
 
 def load_config():
@@ -283,6 +298,12 @@ class VoicePilotApp:
                        activebackground=WHITE,fg=INK,font=(FONT,9)).pack(anchor="w",pady=(4,0))
         tk.Label(settings,text="キーは保存しません。無料枠には回数制限があり、送信データの取扱いに注意してください。",
                  bg=WHITE,fg=MUTED,font=(FONT,8)).pack(anchor="w",pady=(2,0))
+        self.performance_diagnostics = tk.BooleanVar(value=self.config.get("measure_performance", False))
+        tk.Checkbutton(
+            settings, text="性能診断（処理時間・CPU時間・メモリのみ、操作ログに一時表示）",
+            variable=self.performance_diagnostics, command=self.save_settings,
+            bg=WHITE, fg=INK, activebackground=WHITE, font=(FONT, 9)
+        ).pack(anchor="w", pady=(8, 0))
 
         # Keep the everyday UI sparse.  Settings are one click away.
         self.settings_card.pack_forget()
@@ -426,7 +447,10 @@ class VoicePilotApp:
                             "allow_cloud_ui":self.cloud_permission.get(),
                             "allow_cloud_image": self.cloud_image_permission.get(),
                             "auto_stop":self.auto_stop.get(),
-                            "voice_feedback":self.voice_feedback.get()})
+                            "voice_feedback":self.voice_feedback.get(),
+                            "measure_performance":self.performance_diagnostics.get()
+                            if hasattr(self, "performance_diagnostics") else
+                            self.config.get("measure_performance", False)})
         save_config(self.config)
 
     def _start_update_check(self):
@@ -714,8 +738,10 @@ class VoicePilotApp:
         self.stop_event.clear()
         runtime=self.runtime_settings()
         self.set_phase("transcribing")
+        record_finished_at = time.perf_counter() if runtime.get("measure_performance") else None
         threading.Thread(target=self.transcribe_then_execute,
-                         args=(samples, runtime, handsfree_utterance), daemon=True).start()
+                         args=(samples, runtime, handsfree_utterance, record_finished_at),
+                         daemon=True).start()
 
     def check_record_time(self, generation=None):
         if (not self.recording or (generation is not None and
@@ -765,7 +791,8 @@ class VoicePilotApp:
         """
         if (not self.busy and not self.recording and self.recognizer is not None
                 and self._last_transcription_finished > 0
-                and time.monotonic() - self._last_transcription_finished >= SPEECH_MODEL_IDLE_SECONDS):
+                and time.monotonic() - self._last_transcription_finished >=
+                speech_model_idle_seconds(getattr(self.recognizer, "model_name", "small"))):
             stale, self.recognizer = self.recognizer, None
             def unload(recognizer):
                 recognizer.model = None
@@ -781,9 +808,13 @@ class VoicePilotApp:
                 "ollama_model":self.ollama_model.get().strip() or "gemma3:4b",
                 "gemini_model":self.config.get("gemini_model","gemini-2.5-flash"),
                 "whisper_model":self.whisper.get(),"allow_cloud_ui":self.cloud_permission.get(),
-                "allow_cloud_image":self.cloud_image_permission.get()}
+                "allow_cloud_image":self.cloud_image_permission.get(),
+                "measure_performance": bool(self.config.get("measure_performance", False))}
 
-    def transcribe_then_execute(self,samples,runtime,handsfree_utterance=False):
+    def transcribe_then_execute(self,samples,runtime,handsfree_utterance=False,
+                                record_finished_at=None):
+        profile = (OperationProfiler(started_at=record_finished_at)
+                   if runtime.get("measure_performance", False) else None)
         finish_stage="error"
         finish_detail=None
         verified_action=None
@@ -793,7 +824,8 @@ class VoicePilotApp:
             if self.recognizer is None or self.recognizer.model_name!=model:
                 self.recognizer=SpeechRecognizer(model)
                 self.log(f"音声モデル {model} を読み込んでいます（初回はダウンロード）")
-            command=self.recognizer.transcribe(samples)
+            with (profile.phase("asr") if profile else nullcontext()):
+                command=self.recognizer.transcribe(samples)
             if self.stop_event.is_set():
                 finish_stage="interrupted"
                 return
@@ -815,14 +847,15 @@ class VoicePilotApp:
                 finish_detail = "ハンズフリーを終了しました"
                 return
             is_dictation = self.dictation_target is not None or dictation_intent(command, False) is not None
-            if is_dictation:
-                self.log("音声タイピング：入力モードの指示を認識しました" if not self.dictation_target
-                         else "音声タイピング：認識結果を処理しています（本文はログに残しません）")
-                outcome = self._run_dictation_command(command)
-            else:
-                self.show_transcript(command)
-                self.log(f"あなた：{command}")
-                outcome=self._run_agent(command,runtime)
+            with (profile.phase("execute") if profile else nullcontext()):
+                if is_dictation:
+                    self.log("音声タイピング：入力モードの指示を認識しました" if not self.dictation_target
+                             else "音声タイピング：認識結果を処理しています（本文はログに残しません）")
+                    outcome = self._run_dictation_command(command)
+                else:
+                    self.show_transcript(command)
+                    self.log(f"あなた：{command}")
+                    outcome=self._run_agent(command,runtime)
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             verified_action=outcome.verified_action if finish_stage == "completed" else None
             if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard", "answered"}:
@@ -839,6 +872,8 @@ class VoicePilotApp:
                     self.log("連続して音声処理が失敗したため、ハンズフリーを終了しました")
                 elif finish_stage not in {"error", "no_speech", "interrupted"}:
                     self.handsfree.success()
+            if profile is not None:
+                self.log(profile.summary(voice=True, status=finish_stage))
             self.mark_idle(finish_stage, finish_detail)
             if not is_dictation and not (handsfree_utterance and finish_stage in {"no_speech", "interrupted"}):
                 self._speak_result(finish_stage, verified_action)
@@ -1020,13 +1055,15 @@ class VoicePilotApp:
         return RunOutcome(result.stage, result.message)
 
     def run_text_task(self,command,runtime,force_chatgpt=False,autonomous=False):
+        profile = OperationProfiler() if runtime.get("measure_performance", False) else None
         finish_stage="error"
         finish_detail=None
         try:
-            outcome = (self._run_chatgpt(command) if force_chatgpt else
-                       self._run_dictation_command(command) if
-                       self.dictation_target or dictation_intent(command, False) else
-                       self._run_agent(command, runtime, autonomous=autonomous))
+            with (profile.phase("execute") if profile else nullcontext()):
+                outcome = (self._run_chatgpt(command) if force_chatgpt else
+                           self._run_dictation_command(command) if
+                           self.dictation_target or dictation_intent(command, False) else
+                           self._run_agent(command, runtime, autonomous=autonomous))
             finish_stage="interrupted" if self.stop_event.is_set() else outcome.status
             if finish_stage in {"error", "incomplete", "unverified", "handoff", "handoff_clipboard", "answered"}:
                 finish_detail=outcome.summary
@@ -1034,6 +1071,8 @@ class VoicePilotApp:
             finish_detail=friendly_error(e)
             self.log(f"実行エラー: {finish_detail}")
         finally:
+            if profile is not None:
+                self.log(profile.summary(voice=False, status=finish_stage))
             self.mark_idle(finish_stage, finish_detail)
 
     def mark_idle(self, stage="idle", detail=None):
