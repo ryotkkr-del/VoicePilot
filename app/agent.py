@@ -239,9 +239,16 @@ class VoiceAgent:
         if action in {"browser_back", "browser_forward"} and not self.windows.is_chrome_foreground():
             return False  # Ambiguous: route through the planner instead.
         validate_action({"action": action, "args": args})
-        if action == "windows_hotkey" and args["keys"] == "ctrl+v":
-            if not self.confirm("現在のウィンドウにクリップボードの内容を貼り付けますか？"):
-                self._fast_outcome = self._finish("interrupted", "貼り付けをキャンセルしました")
+        if action == "windows_hotkey" and args["keys"] in {"ctrl+v", "ctrl+z"}:
+            # Keep the deterministic fast path aligned with planner approvals.
+            # Undo can discard the user's own edits, not just VoicePilot's last
+            # action. Never treat it as an automatically safe navigation key.
+            undo = args["keys"] == "ctrl+z"
+            prompt = ("現在のアプリの編集を元に戻しますか？"
+                      if undo else "現在のウィンドウにクリップボードの内容を貼り付けますか？")
+            if not self.confirm(prompt):
+                self._fast_outcome = self._finish(
+                    "interrupted", "取り消し操作をキャンセルしました" if undo else "貼り付けをキャンセルしました")
                 return True
         if not self._may_act():
             self._fast_outcome = self._finish("interrupted", "操作を中止しました")
