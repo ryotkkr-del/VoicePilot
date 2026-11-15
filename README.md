@@ -6,6 +6,10 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.1: Windows output compatibility and release consistency
+
+Fixed the optional microphone diagnostic tests on Windows hosts configured with legacy console encodings. The diagnostic CLI configures UTF-8 output when run directly. Release publishing checks that the workflow commit is still `main` HEAD before creating a release, avoiding stale assets from queued workflow runs. No change to autonomous permissions.
+
 ## v0.23: safer screen context + opt-in local microphone diagnostic
 
 **Privacy fix:** In v0.22, foreground terminal/admin/unknown processes were denied UIA tree traversal but could still leak their window title and the titles of other open apps into the AI context. Now protected snapshots and quick-state observations return **no titles, controls or window identifiers**; the title enumerator is not even invoked for denied foregrounds. If the foreground changes during UIA scanning or the Chrome-DOM fallback, the partial snapshot is discarded and cached control targets are cleared.

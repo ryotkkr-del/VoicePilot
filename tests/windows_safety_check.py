@@ -245,7 +245,7 @@ def main() -> int:
     elif args.interactive_microphone:
         results["local_microphone"] = "SKIP:preflight failed"
     print("\nVoicePilot Windows safety report (no private text captured)")
-    print(json.dumps({"version": "0.23.0", "os": "Windows" if os.name == "nt" else "Other",
+    print(json.dumps({"version": "0.23.1", "os": "Windows" if os.name == "nt" else "Other",
                       "results": results}, ensure_ascii=False, indent=2))
     return 1 if any(v.startswith("FAIL") for v in results.values()) else 0
 

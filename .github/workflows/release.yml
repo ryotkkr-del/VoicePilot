@@ -39,6 +39,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Prevent queued older commits publishing a stale release asset.
+          $mainHead = gh api "repos/$env:GITHUB_REPOSITORY/branches/main" --jq ".commit.sha"
+          if ($LASTEXITCODE -ne 0 -or -not $mainHead) { throw "Could not verify latest main commit" }
+          if ($mainHead.Trim() -ne $env:GITHUB_SHA) {
+            Write-Host "Commit is no longer main HEAD. Skipping stale release."
+            exit 0
+          }
           $version = (Get-Content VERSION -Raw).Trim()
           $tag = "v$version"
           $releases = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName | ConvertFrom-Json
