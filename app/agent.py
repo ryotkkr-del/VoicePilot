@@ -130,8 +130,10 @@ class VoiceAgent:
             if (item.get("type") in {"password", "file", "hidden"}
                     or item.get("sensitive") or is_sensitive_field(item.get("label"))):
                 raise ValueError("機密情報の入力欄は操作できません")
-            # Do not silently overwrite the user's existing draft.
-            return bool(item.get("has_value"))
+            # A seemingly harmless empty field can transmit AI-inferred text to
+            # a remote service via live autosave or input listeners. Always ask
+            # before *any* model-generated form write, even when initially empty.
+            return True
         if action in {"windows_click", "windows_fill"}:
             win = context.get("windows", {})
             controls = win.get("controls", []) if isinstance(win, dict) else []
