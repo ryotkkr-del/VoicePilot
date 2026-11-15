@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.5: prevent wrong-window keys and restrict release tokens
+
+Hardens the final desktop-input boundary. AI-generated hotkeys, typing and scrolling are now pinned to the foreground window observed before planning; if the window changes while the model is thinking or during the user-approval dialog, the action fails closed instead of targeting the newly focused app. Deterministic fast hotkeys also pin their window before confirmation. This reduces, but does not eliminate, non-atomic focus changes during the OS input itself.
+
+**Any AI-proposed Chrome form fill now requires explicit approval, including writes to previously empty fields:** modern pages can autosave or transmit on input. Sensitive input fields remain blocked. Approval dialogs continue to hide input text for privacy; users should inspect the typed text in the destination.
+
+Release CI now runs tests and builds with repository **read-only** permissions, and uses a separate publish-only job with write privileges after successful tests and only for non-PR events. Chrome extension manifest version is synchronized with `VERSION`; archive production refuses mismatches. Windows mocked regressions cover the new safety boundaries. These controls are not a sandbox, code-signing system, or proof of real-device safety.
+
 ## v0.23.4: opt-in per-operation timings and local resource snapshots
 
 Open **Settings → 性能診断** to optionally log numeric timings for real VoicePilot commands. Voice commands report duration from **recording stop** to completion, including ASR and operation timing; text commands report worker runtime. Process-wide CPU time (seconds, **not CPU%**) and Windows current-process working set samples at start/end are included when available. Samples are not peaks and **exclude separate Ollama/Chrome processes**. No audio, transcripts, URLs or user content are added by these performance diagnostics, and there is no telemetry upload, diagnostic file, or background sampling. The normal pre-existing operation log is unchanged. Diagnostics default off.

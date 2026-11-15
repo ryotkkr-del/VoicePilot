@@ -25,6 +25,7 @@ class FastHotkeyApprovalTests(unittest.TestCase):
             allow_cloud_ui=False,
             stop_event=threading.Event(),
         )
+        agent.windows.foreground_hwnd.return_value = 101
         agent._execute = Mock(return_value={"ok": True})
         return agent, planner
 

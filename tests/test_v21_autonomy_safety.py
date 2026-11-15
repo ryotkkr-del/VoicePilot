@@ -144,7 +144,8 @@ class LongTaskTests(unittest.TestCase):
         agent = VoiceAgent(Mock(connected=False), Mock(), planner,
                            log, approve, False, event, max_steps=max_steps,
                            autonomous=True, session=session, limits=limits)
-        agent._context = Mock(return_value={})
+        agent._context = Mock(return_value={"windows": {"window_ref": "101"}})
+        agent.windows.foreground_hwnd.return_value = 101
         agent._execute = Mock(return_value="accepted")
         return agent, planner, approve, session
 

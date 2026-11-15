@@ -43,7 +43,7 @@ class SafetyPolicy(unittest.TestCase):
         context = {"browser": {"elements": [{"id": "a", "label": "メモ", "type": "text", "has_value": True}]}}
         self.assertTrue(agent._requires_confirmation("browser_fill", {"id": "a", "text": "new"}, context))
         context["browser"]["elements"][0]["has_value"] = False
-        self.assertFalse(agent._requires_confirmation("browser_fill", {"id": "a", "text": "new"}, context))
+        self.assertTrue(agent._requires_confirmation("browser_fill", {"id": "a", "text": "new"}, context))  # autosave can transmit empty-field input
 
     def test_sensitive_fields_rejected(self):
         agent, *_ = build_agent()
