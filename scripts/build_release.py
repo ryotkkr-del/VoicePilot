@@ -3,6 +3,7 @@
 Usage: python scripts/build_release.py  (outputs dist/VoicePilot-vX.Y.Z.zip)
 """
 from pathlib import Path
+import json
 import zipfile
 import sys
 
@@ -15,6 +16,13 @@ def build(output_dir: Path | None = None) -> Path:
     version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
     from voicepilot_bootstrap import version_tuple
     version_tuple(version)
+    # A mismatched extension version causes repeated reloads, stale protocol
+    # assumptions, and misleading compatibility checks on the user's PC.
+    # Never ship or auto-update a build with inconsistent components.
+    manifest = json.loads((ROOT / "chrome-extension" / "manifest.json").read_text(encoding="utf-8"))
+    if (not isinstance(manifest, dict) or manifest.get("manifest_version") != 3
+            or manifest.get("version") != version):
+        raise RuntimeError("Chrome拡張のバージョンとVERSIONが一致しません")
     files = sorted(
         p for p in ROOT.rglob("*") if p.is_file()
         and not p.is_symlink() and (
