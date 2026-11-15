@@ -25,6 +25,28 @@ from .task_policy import LongTaskLimits, TaskProgress, EFFECTFUL_ACTIONS, requir
 # An LLM decision or approval dialog can outlive the original target.
 FOREGROUND_BOUND = frozenset({"windows_hotkey", "windows_scroll", "windows_type"})
 
+
+class TargetChangedError(RuntimeError):
+    """A pre-dispatch target mismatch: the side effect was never attempted."""
+
+
+def safe_clarification(message: str) -> str:
+    """Return a canned useful question, never arbitrary LLM/page-derived text.
+
+    The model may suggest which category is ambiguous but cannot place secret
+    content or a forged authority statement into the operation log.
+    """
+    value = message.casefold()
+    if "どちらのファイル" in value or "どのファイル" in value:
+        return "どちらのファイルを操作しますか？"
+    if "どのアプリ" in value or "どちらのアプリ" in value:
+        return "どのアプリですか？"
+    if "どのウィンドウ" in value or "どちらのウィンドウ" in value:
+        return "どのウィンドウですか？"
+    if "どのボタン" in value or "どちらのボタン" in value:
+        return "どのボタンですか？"
+    return "指示を確認してください"
+
 NON_REPEATABLE = frozenset({
     "browser_click", "browser_fill", "windows_click", "windows_fill",
     "windows_type", "screen_click", "screen_double_click",
@@ -80,13 +102,14 @@ class VoiceAgent:
             try:
                 context["browser"] = self.bridge.call("snapshot")
             except Exception as e:
-                context["browser_error"] = str(e)[:150]
+                # Browser errors can contain page-controlled private text.
+                context["browser_error"] = "Chromeの画面情報を取得できませんでした"
         try:
             if hasattr(self.windows, "allow_chrome_uia_fallback"):
                 self.windows.allow_chrome_uia_fallback = not isinstance(context.get("browser"), dict)
             context["windows"] = self.windows.snapshot()
         except Exception as e:
-            context["windows_error"] = str(e)[:150]
+            context["windows_error"] = "Windows画面の情報を取得できませんでした"
         context["task_memory"] = task_context(
             self.session, (context.get("windows") or {}).get("active_title", ""),
             browser=context.get("browser"), windows=context.get("windows"))
@@ -179,14 +202,14 @@ class VoiceAgent:
             # Recheck at the very last dispatch boundary. Checking only before
             # the confirmation dialog is insufficient: focus may have changed.
             if self.windows.foreground_hwnd() != self._expected_input_hwnd:
-                raise RuntimeError("操作するウィンドウが変わったため入力を中止しました")
+                raise TargetChangedError("操作するウィンドウが変わったため入力を中止しました")
         if action in {"screen_click", "screen_double_click", "screen_drag"}:
             if self._frame is None:
                 raise ValueError("画像がありません")
             if time.monotonic() - self._frame.captured_at > 12:
                 raise RuntimeError("画像が古くなりました。もう一度観測してください")
             if self.windows.foreground_hwnd() != self._frame.active_hwnd:
-                raise RuntimeError("画面が切り替わったためクリックを中止しました")
+                raise TargetChangedError("画面が切り替わったためクリックを中止しました")
             x, y = self._frame.pixel(args["x"], args["y"])
             if action == "screen_drag":
                 to_x, to_y = self._frame.pixel(args["to_x"], args["to_y"])
@@ -201,7 +224,7 @@ class VoiceAgent:
             if action in {"browser_click", "browser_fill", "browser_scroll",
                           "browser_back", "browser_forward", "browser_switch_tab"}:
                 if not self.windows.is_chrome_foreground():
-                    raise RuntimeError("Chromeが前面でなくなったため、ブラウザ操作を中止しました")
+                    raise TargetChangedError("Chromeが前面でなくなったため、ブラウザ操作を中止しました")
             return self.bridge.call(action, args)
         if action.startswith("windows_"):
             return self.windows.act(action, args)
@@ -356,7 +379,7 @@ class VoiceAgent:
             self._fast_outcome = self._finish(status, evidence.reason,
                                              verified_action=action if status == "completed" else None)
         except Exception as exc:
-            self._fast_outcome = self._finish("incomplete", "操作対象が変わったため中止しました: " + str(exc)[:100])
+            self._fast_outcome = self._finish("incomplete", "操作対象を安全に確認できないため中止しました")
         return True
 
     def _plan_checked(self, instruction: str, context: dict,
@@ -439,11 +462,9 @@ class VoiceAgent:
                 if completed_steps == 0:
                     # Preserve a useful clarification from the planner.  It is only
                     # displayed as text, never used as an executable instruction.
-                    reason = message.strip()[:180]
-                    if not reason or any(word in reason for word in
-                                         ("完了しました", "実行しました", "成功しました")):
-                        reason = "指示を確認してください"
-                    return self._finish("incomplete", "操作は実行されませんでした。" + reason)
+                    # Only allow fixed useful clarification categories. Never
+                    # echo the original model message or any embedded secret.
+                    return self._finish("incomplete", "操作は実行されませんでした。" + safe_clarification(message))
                 if any("error" in step for step in history):
                     return self._finish("incomplete", "一部の操作でエラーがありました。操作ログを確認してください")
                 if any(step.get("verification") != "verified" for step in history):
@@ -485,8 +506,9 @@ class VoiceAgent:
             signatures[key] = signatures.get(key, 0) + 1
             if signatures[key] >= 3:
                 return self._finish("incomplete", "同じ操作の繰り返しを検出したため停止しました")
-            self.log(f"{index + 1}/{self.max_steps}  {action}" if self.autonomous
-                     else f"{index + 1}/{self.max_steps}  {message or action}")
+            # Do not print model-generated explanations: they can reflect
+            # sensitive text from webpages, user prompts or windows.
+            self.log(f"{index + 1}/{self.max_steps}  {action}")
             try:
                 if self.autonomous and action in EFFECTFUL_ACTIONS:
                     if effect_count >= self.limits.max_effects:
@@ -552,7 +574,9 @@ class VoiceAgent:
                             evidence = Evidence("verified", "画面遷移を改めて確認しました")
                     except Exception:
                         pass
-                history.append({"action": action, "args": args, "result": str(result)[:800],
+                # Raw tool responses may contain page text or file names.
+                # Next-step planning needs the status, not raw tool output.
+                history.append({"action": action, "args": args,
                                 "verification": evidence.status})
                 remember_step(self.session, action, args, context, evidence.status)
                 completed_steps += 1
@@ -574,10 +598,23 @@ class VoiceAgent:
             except Exception as e:
                 if self.stop_event.is_set():
                     return self._finish("interrupted", "操作を中止しました。直前の操作は実行された可能性があります")
-                self.log(f"操作エラー: {type(e).__name__}" if self.autonomous else f"操作エラー: {e}")
-                history.append({"action": action, "args": args, "error": str(e)[:200]})
-                if self.autonomous:
-                    return self._finish("incomplete", "操作の失敗が確認されたため、自律作業を安全停止しました")
+                # Never log or re-send remote exception text as it may echo
+                # private browser fields or credentials.
+                if isinstance(e, TargetChangedError):
+                    self.log("操作エラー: 画面が切り替わったため中止しました")
+                else:
+                    self.log(f"操作エラー（{type(e).__name__}）")
+                history.append({"action": action, "error": type(e).__name__})
+                if action in EFFECTFUL_ACTIONS:
+                    # Connection loss and timeouts may occur *after* a remote
+                    # operation has committed. Never plan another side effect
+                    # when its completion is unknown (in either task mode).
+                    if isinstance(e, (ValueError, PermissionError, TargetChangedError)):
+                        return self._finish("incomplete", "操作を安全に実行できなかったため停止しました")
+                    return self._finish(
+                        "unverified",
+                        "操作結果が不明なため停止しました。再実行せず、画面を確認してください",
+                    )
                 if sum("error" in h for h in history) >= 3:
                     return self._finish("error", "連続エラーのため停止しました")
         return self._finish("incomplete", "操作数の上限に達したため停止しました。続きを指示してください。")

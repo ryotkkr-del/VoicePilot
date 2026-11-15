@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.6: P0 roadmap — stop after ambiguous effects and redact operation logs
+
+The user-provided go-live roadmap is now tracked in [docs/ROADMAP_PROGRESS.md](docs/ROADMAP_PROGRESS.md), with **P0 blocking P1 and P2**. This release is a partial P0-2/P0-3 improvement, not a full safety sign-off.
+
+After an effectful operation raises an ambiguous timeout, disconnect or runtime error, both normal and long-task agents stop immediately, without planning more side effects or repeating the unknown operation. A definite `ValueError`/`PermissionError` refusal is classified as incomplete; potentially committed operations are unverified.
+
+Spoken and typed command bodies are no longer appended to the ordinary operation log; editable speech transcripts remain visible in the input field. Untrusted AI messages, browser/Windows exception bodies and raw tool-result bodies are excluded from step logs and model history. Explicit screen-explanation responses still require a separate disclosure review. Synthetic secrets and stop-race regressions test these limits without real PC input. The release remains a **Windows prototype**: independent update signing, real-device tests and full P0 checks are outstanding.
+
 ## v0.23.5: prevent wrong-window keys and restrict release tokens
 
 Hardens the final desktop-input boundary. AI-generated hotkeys, typing and scrolling are now pinned to the foreground window observed before planning; if the window changes while the model is thinking or during the user-approval dialog, the action fails closed instead of targeting the newly focused app. Deterministic fast hotkeys also pin their window before confirmation. This reduces, but does not eliminate, non-atomic focus changes during the OS input itself.
