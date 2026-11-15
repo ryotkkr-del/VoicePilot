@@ -61,6 +61,21 @@ def speech_model_idle_seconds(model_name: str) -> int:
     return SPEECH_MODEL_IDLE_SECONDS
 
 
+def bootstrap_security_revision() -> int:
+    """Inspect the bootstrap that will actually run at the next launch.
+
+    Automatic app source updates deliberately do not overwrite this file.
+    A newer app running under an older bootstrap must not claim to be fully
+    protected by newer update-integrity checks.
+    """
+    try:
+        import voicepilot_bootstrap as bootstrap
+        value = getattr(bootstrap, "BOOTSTRAP_SECURITY_REVISION", 0)
+        return value if type(value) is int and value >= 0 else 0
+    except ImportError:
+        return 0
+
+
 def load_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = dict(DEFAULTS)
@@ -143,6 +158,8 @@ class VoicePilotApp:
                 on_error=self.log,
             )
         self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
+        if bootstrap_security_revision() < 2:
+            self.log("注意：更新基盤が旧版です。更新ZIPの新しい安全検証は未適用です。正式運用・重要データでの使用は避けてください。")
 
     def button(self, parent, text, command, primary=False):
         return tk.Button(parent, text=text, command=command,

@@ -24,6 +24,8 @@ import uuid
 import unicodedata
 import zipfile
 
+BOOTSTRAP_SECURITY_REVISION = 2  # Backup preflight + durable transaction recovery (not signed)
+
 REPO = "ryotkkr-del/VoicePilot"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
@@ -287,17 +289,54 @@ def _ensure_inside(root: Path, relative: str) -> Path:
 
 
 def _restore(root: Path, backup: Path, files: list[dict]) -> None:
-    for item in reversed(files):
-        target = _ensure_inside(root, item["name"])
-        original = backup / item["name"]
+    """Validate *every* backup before restoring any installed file.
+
+    A corrupt or missing backup late in the list must not cause a partial
+    rollback of earlier files. New-format snapshots bind each existing file
+    to its SHA-256; legacy snapshots without hashes remain readable so an
+    interrupted older installation is still recoverable.
+    """
+    if not isinstance(files, list) or not files or len(files) > MAX_FILES:
+        raise UpdateError("復元ファイル一覧が不正です")
+    if backup.is_symlink() or not backup.is_dir():
+        raise UpdateError("バックアップ保存先が不正です")
+    prepared = []
+    seen: set[str] = set()
+    for item in files:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or type(item.get("existed")) is not bool:
+            raise UpdateError("復元ファイル情報が不正です")
+        name = _safe_name(item["name"])
+        folded = unicodedata.normalize("NFC", name).casefold()
+        if folded in seen:
+            raise UpdateError("復元ファイル名が重複しています")
+        seen.add(folded)
+        target = _ensure_inside(root, name)
+        original = _ensure_inside(backup, name)
+        if target.exists() and not target.is_file():
+            raise UpdateError("復元先がファイルではありません")
+        expected = item.get("backup_sha256")
+        if expected is not None and (not isinstance(expected, str)
+                                     or not re.fullmatch(r"[0-9a-f]{64}", expected)):
+            raise UpdateError("復元ファイルの検証値が不正です")
         if item["existed"]:
             if not original.is_file():
                 raise UpdateError("バックアップファイルがありません")
+            if expected is not None and hashlib.sha256(original.read_bytes()).hexdigest() != expected:
+                raise UpdateError("バックアップの内容が変わっています")
+        elif expected is not None:
+            raise UpdateError("存在しないファイルに検証値は設定できません")
+        prepared.append((target, original, item["existed"], expected))
+    # All source files and destinations have passed preflight. Verify again
+    # after copying each backup to a temporary file, before os.replace.
+    for target, original, existed, expected in reversed(prepared):
+        if existed:
             target.parent.mkdir(parents=True, exist_ok=True)
             with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".vp-restore-", delete=False) as tmp:
                 tmpfile = Path(tmp.name)
             try:
                 shutil.copyfile(original, tmpfile)
+                if expected is not None and hashlib.sha256(tmpfile.read_bytes()).hexdigest() != expected:
+                    raise UpdateError("復元中にバックアップが変更されました")
                 os.replace(tmpfile, target)
             finally:
                 tmpfile.unlink(missing_ok=True)
@@ -319,6 +358,14 @@ def recover_interrupted(root: Path, cache: Path | None = None) -> bool:
     if not isinstance(files, list) or len(files) > MAX_FILES:
         raise UpdateError("回復情報が不正です")
     _restore(root, backup, files)
+    # If a crash happened after the new last_good record was written but
+    # before journal removal, that record refers to a version just reverted.
+    # Never leave it advertised as a valid rollback point.
+    state = cache / "last_good.json"
+    if state.exists():
+        current = _read_json(state)
+        if current.get("backup") == backup_id:
+            state.unlink()
     journal.unlink()
     (cache / "pending.json").unlink(missing_ok=True)
     return True
@@ -370,32 +417,6 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
     backup.mkdir()
     ordered = sorted((n for n in hashes if n not in _BOOTSTRAP_FILES and n != "VERSION")) + ["VERSION"]
     journal = {"backup": backup_id, "files": []}
-    try:
-        # First prepare all backups; no changes to installed files yet.
-        for name in ordered:
-            target = root / name
-            existed = target.is_file()
-            if existed:
-                saved = backup / name
-                saved.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, saved)
-            journal["files"].append({"name": name, "existed": existed})
-        _atomic_json(cache / "journal.json", journal)
-        for name in ordered:
-            target = root / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".vp-update-", delete=False) as handle:
-                temp_path = Path(handle.name)
-            try:
-                shutil.copyfile(stage / name, temp_path)
-                os.replace(temp_path, target)
-            finally:
-                temp_path.unlink(missing_ok=True)
-    except Exception as exc:
-        _restore(root, backup, journal["files"])
-        (cache / "journal.json").unlink(missing_ok=True)
-        raise UpdateError("更新失敗のため旧版を復元しました") from exc
-    (cache / "journal.json").unlink(missing_ok=True)
     prior = cache / "last_good.json"
     previous_backup = None
     if prior.exists():
@@ -405,13 +426,64 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
                 previous_backup = cache / old
         except (OSError, ValueError):
             pass
-    _atomic_json(prior, {"backup": backup_id, "files": journal["files"], "from": app_version(backup), "to": version})
+    try:
+        # Prepare *all* backups before modifying any installed file.
+        # Store a digest of each backup in the recovery journal so broken
+        # or replaced snapshots are caught before a future rollback.
+        for name in ordered:
+            target = _ensure_inside(root, name)
+            existed = target.is_file()
+            entry = {"name": name, "existed": existed}
+            if existed:
+                saved = _ensure_inside(backup, name)
+                saved.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(target, saved)
+                entry["backup_sha256"] = hashlib.sha256(saved.read_bytes()).hexdigest()
+            journal["files"].append(entry)
+        _atomic_json(cache / "journal.json", journal)
+        for name in ordered:
+            target = _ensure_inside(root, name)
+            staged = _ensure_inside(stage, name)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix=".vp-update-", delete=False) as handle:
+                temp_path = Path(handle.name)
+            try:
+                shutil.copyfile(staged, temp_path)
+                # Another local process could alter the stage after its first
+                # hash check. Never install bytes that differ from the digest.
+                if hashlib.sha256(temp_path.read_bytes()).hexdigest() != hashes[name]:
+                    raise UpdateError("適用直前に更新ファイルが変更されました")
+                os.replace(temp_path, target)
+            finally:
+                temp_path.unlink(missing_ok=True)
+        # Commit the rollback metadata *before* removing the journal. If this
+        # write fails, the journal still exists and we can restore old code.
+        _atomic_json(prior, {"backup": backup_id, "files": journal["files"],
+                             "from": app_version(backup), "to": version})
+    except Exception as exc:
+        try:
+            _restore(root, backup, journal["files"])
+        except Exception as restore_error:
+            # Never discard the journal when recovery is incomplete.
+            raise UpdateError("更新後の復元に失敗しました。起動せず復旧してください") from restore_error
+        # An interrupted or faulty metadata write might have replaced
+        # last_good just before reporting an error. After restoring the old
+        # source, that new record must never remain a valid rollback marker.
+        if prior.exists():
+            try:
+                if _read_json(prior).get("backup") == backup_id:
+                    prior.unlink()
+            except (OSError, ValueError, UpdateError):
+                # Keep the journal if recovery metadata cannot be inspected.
+                raise UpdateError("更新記録が不正なため起動を停止しました") from exc
+        (cache / "journal.json").unlink(missing_ok=True)
+        raise UpdateError("更新失敗のため旧版を復元しました") from exc
+    (cache / "journal.json").unlink(missing_ok=True)
     if previous_backup and previous_backup != backup and not previous_backup.is_symlink():
         shutil.rmtree(previous_backup, ignore_errors=True)
     pending_file.unlink(missing_ok=True)
     shutil.rmtree(stage, ignore_errors=True)
     return "applied"
-
 
 def rollback(root: Path, cache: Path | None = None) -> str:
     root = Path(root).resolve()
