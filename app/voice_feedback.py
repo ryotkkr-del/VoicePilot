@@ -115,6 +115,7 @@ class SpeechFeedback:
         self._generation = 0
         self._closed = False
         self._disabled = False
+        self._speaking = False
         self._worker_thread: threading.Thread | None = None
 
     def say(self, text: str) -> bool:
@@ -131,6 +132,14 @@ class SpeechFeedback:
                 self._worker_thread.start()
             self._condition.notify()
             return True
+
+    def is_active(self) -> bool:
+        """True until queued and currently spoken TTS have both finished.
+
+        The next hands-free microphone capture MUST NOT begin during SAPI speech.
+        """
+        with self._condition:
+            return self._pending is not None or self._speaking
 
     def stop(self) -> None:
         with self._condition:
@@ -168,8 +177,16 @@ class SpeechFeedback:
                         return
                     generation, text = self._pending
                     self._pending = None
-                if not self._outdated(generation):
-                    backend.speak(text, lambda: self._outdated(generation))
+                    # Transfer pending -> speaking atomically: a microphone
+                    # rearm check must never see a false quiet gap.
+                    self._speaking = True
+                try:
+                    if not self._outdated(generation):
+                        backend.speak(text, lambda: self._outdated(generation))
+                finally:
+                    with self._condition:
+                        self._speaking = False
+                        self._condition.notify_all()
         except Exception as exc:
             with self._condition:
                 self._disabled = True  # Don't spam the user for every result.

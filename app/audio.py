@@ -24,8 +24,10 @@ class Microphone:
         self._latest_rms = 0.0
         self._noise_rms = []
         self._threshold = 0.012
+        self._continuous = False
+        self._first_voice = 0.0
 
-    def start(self):
+    def start(self, *, continuous: bool = False):
         import sounddevice as sd
         if self._stream:
             raise RuntimeError("すでに録音中です")
@@ -39,6 +41,8 @@ class Microphone:
             self._latest_rms = 0.0
             self._noise_rms = []
             self._threshold = 0.012
+            self._continuous = continuous
+            self._first_voice = 0.0
 
         def callback(indata, frames, time_info, status):
             chunk = indata[:, 0].copy()
@@ -46,6 +50,13 @@ class Microphone:
             now = time.monotonic()
             with self._lock:
                 self._chunks.append(chunk)
+                # A hands-free session may listen to silence for minutes.
+                # Keep at most ~2 seconds of pre-roll until speech begins.
+                # Otherwise the microphone would accumulate unbounded RAM.
+                if self._continuous and not self._heard_voice:
+                    max_chunks = max(1, int(self.sample_rate * 2 / max(1, frames)) + 1)
+                    if len(self._chunks) > max_chunks:
+                        del self._chunks[:-max_chunks]
                 self._latest_rms = rms
                 # First half-second estimates room noise; thresholds stay bounded.
                 # Never calibrate on a loud initial utterance: users often
@@ -55,6 +66,8 @@ class Microphone:
                     if self._noise_rms:
                         self._threshold = max(0.008, min(0.035, float(np.median(self._noise_rms)) * 3.5))
                 if rms > self._threshold and (now - self._started > 0.10):
+                    if not self._heard_voice:
+                        self._first_voice = now
                     self._heard_voice = True
                     self._last_voice = now
 

@@ -25,6 +25,7 @@ from .ui_dispatch import UIDispatcher
 from .voice_feedback import SpeechFeedback, result_announcement
 from .chatgpt_handoff import extract_chatgpt_request, prepare_chatgpt_handoff
 from .dictation import DictationController, dictation_intent, DictationError, DictationTarget
+from .handsfree import HandsFreeSession, handsfree_control
 
 CONFIG_DIR = Path(os.environ.get("APPDATA", str(Path.home()))) / "VoicePilot"
 CONFIG_FILE = CONFIG_DIR / "config.json"
@@ -90,6 +91,11 @@ class VoicePilotApp:
         self.windows = WindowsController()
         self.dictation = DictationController(self.windows, self.bridge)
         self.dictation_target: DictationTarget | None = None
+        # Opt-in and volatile by design: NEVER enable the microphone on startup.
+        self.handsfree = HandsFreeSession()
+        self._handsfree_capture = False
+        self._capture_generation = 0
+        self._closing = False
         self.session = {"recent_instructions": [], "recent_files": []}  # RAM only; never written to disk
         self.recording = False
         self.busy = False
@@ -187,6 +193,12 @@ class VoicePilotApp:
         self.status_hint = tk.Label(talk, text="Ctrl + Alt + Space で話す", bg=WHITE,
                                     fg=MUTED, font=(FONT, 9), anchor="w")
         self.status_hint.pack(fill="x", pady=(8, 0))
+        hfrow = tk.Frame(talk, bg=WHITE)
+        hfrow.pack(fill="x", pady=(6, 0))
+        self.handsfree_button = self.button(hfrow, "ハンズフリー開始", self.toggle_handsfree)
+        self.handsfree_button.pack(side="left")
+        tk.Label(hfrow, text="開始後は声だけで続けて指示（無操作3分で終了）",
+                 bg=WHITE, fg=MUTED, font=(FONT, 9)).pack(side="left", padx=(8, 0))
         self.button(row,"小さく表示",self.open_mini).pack(side="right")
         self.abort_button=self.button(row,"■ 停止",self.abort)
         self.abort_button.pack(side="right", padx=(0,6))
@@ -353,6 +365,8 @@ class VoicePilotApp:
         btns.pack(fill="x",pady=(10,0))
         self.mini_rec_button=self.button(btns,"● 話す",self.toggle_record,True)
         self.mini_rec_button.pack(side="left")
+        self.mini_handsfree_button = self.button(btns, "連続ON", self.toggle_handsfree)
+        self.mini_handsfree_button.pack(side="left", padx=(5,0))
         self.button(btns,"停止",self.abort).pack(side="left",padx=8)
         self.button(btns,"画面を開く",self.close_mini).pack(side="right")
         self.mini.protocol("WM_DELETE_WINDOW",self.close_mini)
@@ -485,6 +499,19 @@ class VoicePilotApp:
         entry_action_state = "disabled" if self.busy or recording else "normal"
         self.send_button.configure(state=entry_action_state, text="入力" if self.dictation_target else "実行")
         self.chatgpt_button.configure(state=entry_action_state)
+        hf_on = self.handsfree.enabled
+        self.handsfree_button.configure(
+            text="■ ハンズフリー終了" if hf_on else "ハンズフリー開始",
+            bg="#15803D" if hf_on else "#EDF2F7",
+            fg=WHITE if hf_on else INK,
+            state="normal" if hf_on or not self.busy and not recording else "disabled")
+        if hf_on and not recording and not self.busy:
+            hint = "連続待受：声で指示できます／3分無操作で自動終了"
+            self.status_label.configure(text="ハンズフリー待受中", fg="#15803D")
+            self.status_hint.configure(text=hint)
+        elif hf_on and self.busy:
+            hint = "処理中：マイクを休止しています（終了後に再開）"
+            self.status_hint.configure(text=hint)
         if self.dictation_target and not self.busy and not recording:
             hint = "文章入力中：Ctrl+Alt+Spaceで話す／「入力終了」で解除"
             self.status_label.configure(text="文章入力モード", fg=ACCENT)
@@ -495,6 +522,7 @@ class VoicePilotApp:
         self._refresh_record_buttons()
         if self.mini and self.mini.winfo_exists():
             self.mini_status.configure(text=p.title, fg=colors[p.tone])
+            self.mini_handsfree_button.configure(text="連続OFF" if self.handsfree.enabled else "連続ON")
             self.mini_hint.configure(text=hint[:52])
             self.mini_rec_button.configure(state="normal" if can_speak else "disabled")
 
@@ -531,6 +559,82 @@ class VoicePilotApp:
         if self.mini and self.mini.winfo_exists():
             self.mini_rec_button.configure(text=title,bg=color)
 
+    def toggle_handsfree(self):
+        """Explicitly opt into a time-limited sequential microphone session."""
+        if self.handsfree.enabled:
+            self.stop_handsfree("ハンズフリーを終了しました")
+            return
+        if self.busy or self.recording or self._closing:
+            self.log("処理が終了してからハンズフリーを開始してください")
+            return
+        self.handsfree.start()
+        self.stop_event.clear()
+        self.log("ハンズフリー開始。音声で連続指示できます。終了は「ハンズフリー終了」かボタンです")
+        self._apply_phase()
+        self._schedule_handsfree_resume()
+
+    def stop_handsfree(self, reason: str = "ハンズフリーを終了しました"):
+        """Disable first to invalidate every scheduled rearm callback."""
+        if not self.handsfree.enabled:
+            return
+        self.handsfree.stop()
+        if self.recording and self._handsfree_capture:
+            self._stop_record(discard=True)
+        self._handsfree_capture = False
+        if not self._closing:
+            self.log(reason)
+            self._apply_phase()
+
+    def _schedule_handsfree_resume(self, delay_ms: int = 550):
+        """Only a settled, silent, task-free app may reopen the microphone.
+
+        Generation tokens ensure a stale after() callback cannot reopen it
+        after Stop, a mode switch or application shutdown.
+        """
+        generation = self.handsfree.generation
+        def rearm():
+            if self._closing or not self.handsfree.is_current(generation):
+                return
+            if self.busy or self.recording:
+                return  # mark_idle() will reschedule when the task finishes
+            if self.handsfree.expired():
+                self.stop_handsfree("3分間音声操作がなかったため、ハンズフリーを終了しました")
+                return
+            if self.speaker.is_active():
+                self.root.after(250, rearm)
+                return
+            # A brief quiet margin after SAPI ends avoids playback tail echo.
+            self.root.after(450, lambda: self._start_handsfree_capture(generation))
+        self.root.after(delay_ms, rearm)
+
+    def _start_handsfree_capture(self, generation: int):
+        if (self._closing or not self.handsfree.is_current(generation)
+                or self.busy or self.recording):
+            return
+        if self.handsfree.expired():
+            self.stop_handsfree("3分間音声操作がなかったため、ハンズフリーを終了しました")
+            return
+        if self.speaker.is_active():
+            self._schedule_handsfree_resume(300)
+            return
+        self.stop_event.clear()
+        try:
+            self.mic.start(continuous=True)
+        except Exception as exc:
+            # Do not repeatedly reopen a missing or in-use microphone.
+            self.stop_handsfree("マイクを開始できなかったため連続対話を終了しました")
+            self.log(friendly_error(exc))
+            self.set_phase("error")
+            return
+        self._handsfree_capture = True
+        self.recording = True
+        self.record_started = time.monotonic()
+        self._capture_generation += 1
+        generation = self._capture_generation
+        self._refresh_record_buttons()
+        self.set_phase("listening")
+        self.root.after(220, lambda: self.check_record_time(generation))
+
     def toggle_record(self):
         if self.recording:
             self._stop_record()
@@ -553,19 +657,27 @@ class VoicePilotApp:
             self.log(friendly_error(e))
             self.set_phase("error")
             return
+        self._handsfree_capture = False
         self.recording=True
         self.record_started=time.monotonic()
+        self._capture_generation += 1
+        generation = self._capture_generation
         self._refresh_record_buttons()
         self.set_phase("listening")
-        self.root.after(220,self.check_record_time)
+        self.root.after(220, lambda: self.check_record_time(generation))
 
     def _stop_record(self,discard=False):
         if not self.recording:return
         self.recording=False
+        handsfree_utterance = self._handsfree_capture
+        self._capture_generation += 1  # invalidate stale microphone timer callbacks
+        self._handsfree_capture = False
         self._text_at_record_stop = self.command.get()
         self._refresh_record_buttons()
         try:samples=self.mic.stop()
         except Exception as e:
+            if handsfree_utterance:
+                self.handsfree.stop()  # Don't leave an active but silent session.
             self.log(friendly_error(e))
             self.set_phase("error")
             return
@@ -576,10 +688,13 @@ class VoicePilotApp:
         self.stop_event.clear()
         runtime=self.runtime_settings()
         self.set_phase("transcribing")
-        threading.Thread(target=self.transcribe_then_execute,args=(samples,runtime),daemon=True).start()
+        threading.Thread(target=self.transcribe_then_execute,
+                         args=(samples, runtime, handsfree_utterance), daemon=True).start()
 
-    def check_record_time(self):
-        if not self.recording:return
+    def check_record_time(self, generation=None):
+        if (not self.recording or (generation is not None and
+                                   generation != self._capture_generation)):
+            return
         a=self.mic.activity()
         elapsed=a["elapsed"]
         self.phase = "listening"
@@ -589,6 +704,20 @@ class VoicePilotApp:
         lit = meter_level(a["level"], a["threshold"])
         for i, seg in enumerate(self.meter_segments):
             seg.configure(bg="#C2410C" if i < lit else BORDER)
+        if self._handsfree_capture:
+            if not a["heard_voice"] and self.handsfree.expired():
+                self.stop_handsfree("3分間音声操作がなかったため、ハンズフリーを終了しました")
+                return
+            if a["heard_voice"]:
+                if (a["silence"] >= self.config["silence_seconds"]
+                        and a.get("speech_elapsed", 0) >= 0.25):
+                    self._stop_record()
+                    return
+                if a.get("speech_elapsed", 0) >= 30:
+                    self._stop_record()
+                    return
+            self.root.after(220, lambda: self.check_record_time(generation))
+            return
         if elapsed >= 30:
             self._stop_record()
             return
@@ -600,7 +729,7 @@ class VoicePilotApp:
                 self.log("音声が検出されなかったため録音を終了しました")
                 self._stop_record(discard=True)
                 return
-        self.root.after(220,self.check_record_time)
+        self.root.after(220, lambda: self.check_record_time(generation))
 
     def release_idle_model(self):
         """Free the expensive ASR model after a quiet interval.
@@ -628,7 +757,7 @@ class VoicePilotApp:
                 "whisper_model":self.whisper.get(),"allow_cloud_ui":self.cloud_permission.get(),
                 "allow_cloud_image":self.cloud_image_permission.get()}
 
-    def transcribe_then_execute(self,samples,runtime):
+    def transcribe_then_execute(self,samples,runtime,handsfree_utterance=False):
         finish_stage="error"
         finish_detail=None
         verified_action=None
@@ -643,8 +772,21 @@ class VoicePilotApp:
                 finish_stage="interrupted"
                 return
             if not command:
-                self.log("音声を認識できませんでした。もう一度試してください")
+                if not handsfree_utterance:
+                    self.log("音声を認識できませんでした。もう一度試してください")
                 finish_stage="no_speech"
+                return
+            if handsfree_utterance:
+                # Only actual recognized speech extends the idle window;
+                # microphone energy/noise by itself must not do so.
+                self.handsfree.activity()
+            # Strong, whole-utterance stop phrase. Never send it to the LLM or
+            # insert it into a document. Disable immediately before finishing.
+            if handsfree_utterance and handsfree_control(command) == "stop":
+                self.handsfree.stop()
+                self.ui.post(lambda: (self.log("ハンズフリーを終了しました"), self._apply_phase()))
+                finish_stage = "completed"
+                finish_detail = "ハンズフリーを終了しました"
                 return
             is_dictation = self.dictation_target is not None or dictation_intent(command, False) is not None
             if is_dictation:
@@ -665,8 +807,14 @@ class VoicePilotApp:
             finish_stage="error"
         finally:
             self._last_transcription_finished = time.monotonic()
+            if handsfree_utterance:
+                if finish_stage == "error" and self.handsfree.failure():
+                    self.handsfree.stop()
+                    self.log("連続して音声処理が失敗したため、ハンズフリーを終了しました")
+                elif finish_stage not in {"error", "no_speech", "interrupted"}:
+                    self.handsfree.success()
             self.mark_idle(finish_stage, finish_detail)
-            if not is_dictation:
+            if not is_dictation and not (handsfree_utterance and finish_stage in {"no_speech", "interrupted"}):
                 self._speak_result(finish_stage, verified_action)
 
     def toggle_dictation(self):
@@ -818,7 +966,11 @@ class VoicePilotApp:
             next_record = self._record_after_cancel
             self._record_after_cancel = False
             self._apply_phase()
-            if next_record and self.stop_event.is_set():
+            if getattr(getattr(self, "handsfree", None), "enabled", False):
+                # Only the finished worker can clear its cancellation flag.
+                self.stop_event.clear()
+                self._schedule_handsfree_resume()
+            elif next_record and self.stop_event.is_set():
                 # Old worker has exited. Cancellation may have terminated with
                 # an error; either way the old worker is no longer running.
                 # Never open the microphone while two tasks could overlap.
@@ -863,6 +1015,8 @@ class VoicePilotApp:
 
     def abort(self, *, keep_record_request=False):
         self.speaker.stop()
+        if not keep_record_request and getattr(getattr(self, "handsfree", None), "enabled", False):
+            self.stop_handsfree("停止ボタンでハンズフリーを終了しました")
         if not keep_record_request:
             self._record_after_cancel = False
         if not self.busy and not self.recording:
@@ -881,6 +1035,8 @@ class VoicePilotApp:
         self.log("中止を要求しました。AIへの通信中は停止まで少し時間がかかる場合があります")
 
     def close(self):
+        self._closing = True
+        self.handsfree.stop()
         self._record_after_cancel = False
         self.dictation_target = None
         self.speaker.close()
