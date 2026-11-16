@@ -240,6 +240,49 @@ class SignedUpdaterTests(unittest.TestCase):
                     envelope, "0.23.10", hashlib.sha256(self.payload).hexdigest()
                 )
 
+    def test_offline_signing_helper_uses_external_key_and_matches_verifier(self):
+        from scripts.sign_release import sign_archive
+        from cryptography.hazmat.primitives.serialization import (
+            BestAvailableEncryption, Encoding, PrivateFormat,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            key_path = home / "offline-private.pem"
+            password = b"mock-only-secret"
+            key_path.write_bytes(self.private_key.private_bytes(
+                encoding=Encoding.PEM, format=PrivateFormat.PKCS8,
+                encryption_algorithm=BestAvailableEncryption(password),
+            ))
+            archive = home / "VoicePilot-v0.23.10.zip"
+            archive.write_bytes(self.payload)
+            result = sign_archive(archive, key_path, password=password)
+            envelope = json.loads(result.read_text(encoding="utf-8"))
+            updater._verify_signed_release(
+                envelope, "0.23.10", hashlib.sha256(self.payload).hexdigest()
+            )
+            self.assertFalse(key_path.is_relative_to(Path(__file__).resolve().parents[1]))
+            with self.assertRaises(FileExistsError):
+                sign_archive(archive, key_path, password=password)
+            # Public signature contains no private PEM material.
+            self.assertNotIn("PRIVATE KEY", result.read_text(encoding="utf-8"))
+
+    def test_signer_rejects_private_key_in_repository(self):
+        from scripts import sign_release
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding, NoEncryption, PrivateFormat,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            fake_repo = Path(directory)
+            key_path = fake_repo / "test_private.pem"
+            key_path.write_bytes(self.private_key.private_bytes(
+                Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
+            ))
+            archive = fake_repo / "VoicePilot-v0.23.10.zip"
+            archive.write_bytes(self.payload)
+            with patch.object(sign_release, "ROOT", fake_repo):
+                with self.assertRaisesRegex(ValueError, "リポジトリ内"):
+                    sign_release.sign_archive(archive, key_path)
+
     def test_signature_status_never_inferred_from_revision_alone(self):
         self.assertTrue(bootstrap_signing_key_configured())
         with patch.object(updater, "PINNED_ED25519_PUBLIC_KEY_HEX", ""):
