@@ -76,6 +76,18 @@ def bootstrap_security_revision() -> int:
         return 0
 
 
+def bootstrap_signing_key_configured() -> bool:
+    """Read only the installed immutable bootstrap, never a downloaded key."""
+    try:
+        import voicepilot_bootstrap as bootstrap
+        key = getattr(bootstrap, "PINNED_ED25519_PUBLIC_KEY_HEX", "")
+        return isinstance(key, str) and len(key) == 64 and all(
+            char in "0123456789abcdef" for char in key
+        )
+    except ImportError:
+        return False
+
+
 def load_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = dict(DEFAULTS)
@@ -160,6 +172,8 @@ class VoicePilotApp:
         self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
         if bootstrap_security_revision() < 2:
             self.log("注意：更新基盤が旧版です。更新ZIPの新しい安全検証は未適用です。正式運用・重要データでの使用は避けてください。")
+        if not bootstrap_signing_key_configured():
+            self.log("注意：開発者署名の信頼鍵は未設定です。自動更新はGitHubハッシュのみの検査で、独立した真正性は保証できません。")
 
     def button(self, parent, text, command, primary=False):
         return tk.Button(parent, text=text, command=command,
