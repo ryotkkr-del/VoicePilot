@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.15: opt-in first-run microphone-only trial (P0-5)
+
+The distribution now includes `try_voicepilot.bat` and a separate `python -m app.first_trial` UI that only captures up to eight seconds of audio after a button click and runs **local** Japanese Whisper transcription. It never loads the desktop action agent, browser bridge, cloud planner or updater; no transcript or audio is saved. It requires Windows 11 non-admin execution.
+
+The trial launcher creates an isolated Python 3.11 venv and installs **only audio dependencies** if the user explicitly types `INSTALL`; first-time Whisper model download is denied by default (`local_files_only=True`) and enabled only when selected in the trial UI. A cancellation during inference suppresses its output but does not pretend to kill native model computation instantly. Normal VoicePilot behavior remains unchanged.
+
+Read [docs/FIRST_TRIAL_GUIDE.md](docs/FIRST_TRIAL_GUIDE.md) before trying. The release ZIP itself is still an **unsigned prototype**, and the trial is not proof that unrestricted PC automation, future updates, or hardware operation is safe.
+
 ## v0.23.14: offline owner signing key enrollment and verified candidate ZIP
 
 Adds `scripts/owner_release.py` (available in the source checkout, not shipped inside the app ZIP). `new-key` creates a **password-encrypted Ed25519 PKCS8 private key outside the repository** using exclusive creation, never accepting an existing path or a short passphrase. `prepare` validates an unsigned source ZIP, pins that owner's public key into a temporary copy of the immutable revision-3 bootstrap, constructs a new ZIP and detached `.sig.json`, and verifies the complete result with the independent offline migration verifier before and after placement in a fresh external directory. No network, app execution, existing installation modification, or automated publication.
