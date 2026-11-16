@@ -12,7 +12,7 @@ The dependency-free bootstrap **code** now supports independent Ed25519 signatur
 
 `scripts/sign_release.py` is an offline-only helper that signs a validated release ZIP with a developer-provided Ed25519 PEM private key **outside the repository**; tests use ephemeral in-memory keys only. The GUI warns when no trust key is pinned.
 
-**This is not yet an independently signed production update:** `PINNED_ED25519_PUBLIC_KEY_HEX` remains deliberately empty, there is no live developer secret/public-key fingerprint, and existing immutable bootstraps do not update themselves. Present releases remain GitHub-hash-only. Manual out-of-band trust establishment, safe legacy migration, actual signed release publication and Windows hardware integration tests are outstanding. See [docs/SECURE_UPDATE_MIGRATION.md](docs/SECURE_UPDATE_MIGRATION.md).
+**This is not yet an independently signed production update:** `PINNED_ED25519_PUBLIC_KEY_HEX` remains deliberately empty, there is no live developer secret/public-key fingerprint, and existing immutable bootstraps do not update themselves. New revision-3 bootstrap installations refuse unsigned and unpinned updates; legacy immutable bootstraps still use the older GitHub-hash-only behavior. Manual out-of-band trust establishment, safe legacy migration, actual signed release publication and Windows hardware integration tests are outstanding. See [docs/SECURE_UPDATE_MIGRATION.md](docs/SECURE_UPDATE_MIGRATION.md).
 
 ## v0.23.9: P0-4 recoverable updater transaction and legacy bootstrap warning
 
