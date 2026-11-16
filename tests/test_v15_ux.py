@@ -29,6 +29,10 @@ class SimpleField:
 class UXLifecycleTest(unittest.TestCase):
     def _instance(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
+        app._refresh_control_lock_ui = Mock()
         app.recording = False
         app.busy = True
         app._record_after_cancel = False
