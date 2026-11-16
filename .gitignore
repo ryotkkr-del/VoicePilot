@@ -27,6 +27,13 @@ settings.json
 .DS_Store
 Thumbs.db
 
+# Extra defense in depth: never commit owner signing key material.
+*.pem
+*.key
+*.p8
+*.p12
+*.pfx
+
 # Built release artifacts and generated update status
 dist/
 *.zip
