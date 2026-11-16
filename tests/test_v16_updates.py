@@ -1,11 +1,17 @@
 """Updater tests run offline and do not require Windows or a GitHub account."""
+import base64
 import hashlib
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import voicepilot_bootstrap as updater
 
 from voicepilot_bootstrap import (
     UpdateError, apply_pending, check_and_stage, extract_checked,
@@ -46,18 +52,37 @@ class UpdaterTests(unittest.TestCase):
         (self.root / "app/main.py").write_text("old main")
         (self.root / "voicepilot_bootstrap.py").write_text("old stable bootstrap")
         (self.root / "requirements.txt").write_text("old deps")
+        # Ephemeral local key only: no production signer key or network.
+        self.key = Ed25519PrivateKey.generate()
+        pub = self.key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+        )
+        pin = patch.object(updater, "PINNED_SIGNER_PUBLIC_KEY_B64",
+                           base64.b64encode(pub).decode("ascii"))
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    def signature(self, version, digest):
+        payload = updater._signed_payload("v" + version, digest)
+        return base64.b64encode(self.key.sign(payload)).decode("ascii")
 
     def release(self, payload, version="0.17.0", sha=None):
         digest = sha or hashlib.sha256(payload).hexdigest()
+        url = f"https://github.com/ryotkkr-del/VoicePilot/releases/download/v{version}/VoicePilot-v{version}.zip"
         return {"tag_name": "v" + version, "draft": False, "prerelease": False,
-                "assets": [{"name": f"VoicePilot-v{version}.zip", "state": "uploaded",
-                            "digest": "sha256:" + digest,
-                            "browser_download_url": f"https://github.com/ryotkkr-del/VoicePilot/releases/download/v{version}/VoicePilot-v{version}.zip"}]}
+                "assets": [
+                    {"name": f"VoicePilot-v{version}.zip", "state": "uploaded",
+                     "digest": "sha256:" + digest, "browser_download_url": url},
+                    {"name": f"VoicePilot-v{version}.zip.sig", "state": "uploaded",
+                     "browser_download_url": url + ".sig"},
+                ]}
 
     def check(self, payload, version="0.17.0", sha=None):
+        digest = sha or hashlib.sha256(payload).hexdigest()
         return check_and_stage(self.root, self.cache, force=True,
             fetch_release=lambda _: self.release(payload, version, sha),
-            download=lambda _url, output: (output.write_bytes(payload), hashlib.sha256(payload).hexdigest())[1])
+            download=lambda _url, output: (output.write_bytes(payload), hashlib.sha256(payload).hexdigest())[1],
+            download_signature=lambda _url: self.signature(version, digest))
 
     def test_semver(self):
         self.assertTrue(version_tuple("0.18.0") > version_tuple("0.17.9"))
