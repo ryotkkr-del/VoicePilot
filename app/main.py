@@ -1242,6 +1242,8 @@ class VoicePilotApp:
             gate.resume()
             self.ui.post(lambda: (self.log("音声で作業を再開しました"), self._apply_phase()))
         elif intent in {"cancel", "end"}:
+            self.control_permit.revoke()  # thread-safe; no Tk from microphone
+            self.ui.post(self._refresh_control_lock_ui)
             # Cancellation is cooperative: an in-flight Windows/UIA/LLM call
             # may already have committed. Do not advertise an instant rollback.
             self.stop_event.set()
@@ -1314,6 +1316,10 @@ class VoicePilotApp:
             self.stop_handsfree("停止ボタンでハンズフリーを終了しました")
         if not keep_record_request:
             self._record_after_cancel = False
+        # A Stop (including Ctrl+Alt+Esc) always revokes future actions.
+        # Clearing stop_event later cannot implicitly re-arm this permit.
+        self.control_permit.revoke()
+        self._refresh_control_lock_ui()
         if not self.busy and not self.recording:
             if getattr(self, "dictation_target", None) is not None:
                 self.dictation_target = None
@@ -1337,6 +1343,7 @@ class VoicePilotApp:
 
     def close(self):
         self._closing = True
+        self.control_permit.revoke()
         self.handsfree.stop()
         monitor = getattr(self, "_interrupt_monitor", None)
         if monitor is not None:
