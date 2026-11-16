@@ -758,6 +758,9 @@ class VoicePilotApp:
         if (self._closing or not self.handsfree.is_current(generation)
                 or self.busy or self.recording):
             return
+        if not self.control_permit.allowed():
+            self.stop_handsfree("PC操作ロックによってハンズフリーを終了しました")
+            return
         if self.handsfree.expired():
             self.stop_handsfree("3分間音声操作がなかったため、ハンズフリーを終了しました")
             return
@@ -1012,6 +1015,11 @@ class VoicePilotApp:
             if intent is None:
                 return RunOutcome("incomplete", "文章入力の指示を認識できませんでした")
             action, text = intent
+            if action != "stop" and not self.control_permit.allowed():
+                # Direct dictation does not use VoiceAgent. Check before
+                # any editor inspection, focus switch or text insertion.
+                self.dictation_target = None
+                return RunOutcome("incomplete", "PC操作ロック中のため入力しません")
             if action == "start":
                 self.restore_target()
                 self.dictation_target = self.dictation.start()
@@ -1021,11 +1029,6 @@ class VoicePilotApp:
                 self.dictation_target = None
                 self.log("文章入力モードを終了しました")
                 return RunOutcome("completed", "文章入力モードを終了しました")
-            # This path bypasses VoiceAgent; enforce the same authorization
-            # before capture or text insertion, even for a stale voice worker.
-            if not self.control_permit.allowed():
-                self.dictation_target = None
-                return RunOutcome("incomplete", "PC操作ロック中のため入力しません")
             if action == "already_on":
                 return RunOutcome("completed", "文章入力モードは有効です")
             if action == "empty":
@@ -1254,6 +1257,8 @@ class VoicePilotApp:
                                   self._apply_phase()))
 
     def _run_agent(self,command,runtime,autonomous=False):
+        if not self.control_permit.allowed():
+            return RunOutcome("incomplete", "PC操作はロック中です。GUIで明示的に許可してください")
         self.set_phase("acting")
         addressed = extract_chatgpt_request(command)
         if addressed is not None:
