@@ -464,6 +464,25 @@ class VoiceAgent:
                     self.log("次の画面状態から操作結果を確認しました")
                 pending_verification = None
             image_for_call, pending_image = pending_image, None
+            if image_for_call is not None:
+                # Capture time is not transmission time. A focus switch while
+                # the agent took another snapshot must discard old pixels.
+                if self._frame is None or self.windows.foreground_hwnd() != self._frame.active_hwnd:
+                    self._frame = None
+                    return self._finish("incomplete", "画像取得後に対象画面が変わりました。画像は送信しません")
+                guard = getattr(self.windows, "assert_safe_observation", None)
+                try:
+                    if guard is not None:
+                        guard()
+                except PermissionError:
+                    self._frame = None
+                    return self._finish("incomplete", "保護対象の画面画像は送信しません")
+                if self.control_permit is not None and not self.control_permit.allowed():
+                    self._frame = None
+                    return self._finish("incomplete", "PC操作の許可が失効しました。画像は送信しません")
+                if not self._may_act():
+                    self._frame = None
+                    return self._finish("interrupted", "画像送信前に停止しました")
             try:
                 action, args, message = self._plan_checked(
                     instruction, compact_for_model(
@@ -497,8 +516,25 @@ class VoiceAgent:
             if action == "screen_observe":
                 if vision_count >= 2:
                     return self._finish("incomplete", "画像観測の上限に達しました。操作対象を特定できませんでした")
-                if self.planner.provider == "gemini" and not self.allow_cloud_image:
-                    return self._finish("incomplete", "Geminiにスクリーンショットを送る許可がありません。画像共有を有効にするかOllamaを使ってください")
+                if self.planner.provider == "gemini":
+                    if not self.allow_cloud_image:
+                        return self._finish("incomplete", "Geminiにスクリーンショットを送る許可がありません。画像共有を有効にするかOllamaを使ってください")
+                    # The model can *request* observation, but only this
+                    # fresh, local-GUI confirmation may authorize disclosure.
+                    # Avoid displaying model-authored explanations or contents.
+                    consent_hwnd = self.windows.foreground_hwnd()
+                    if not self.confirm(
+                        "Geminiへ現在のモニター画像を送信します。\n\n"
+                        "他のアプリや通知、入力内容が写り込む場合があります。\n"
+                        "機密情報が見えていないことを確認し、この1枚の送信を許可しますか？"
+                    ):
+                        return self._finish("interrupted", "画像送信が承認されなかったため中止しました")
+                    if not self._may_act():
+                        return self._finish("interrupted", "画像送信前に停止しました")
+                    if self.control_permit is not None and not self.control_permit.allowed():
+                        return self._finish("incomplete", "PC操作の許可が失効しました。画像は送信しません")
+                    if self.windows.foreground_hwnd() != consent_hwnd:
+                        return self._finish("incomplete", "確認後に対象画面が変わりました。画像は送信しません")
                 # A terminal may disguise itself as an ordinary window.
                 # Check the actual foreground process BEFORE screen capture.
                 guard = getattr(self.windows, "assert_safe_observation", None)

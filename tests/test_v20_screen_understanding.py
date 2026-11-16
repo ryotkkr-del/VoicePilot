@@ -68,7 +68,8 @@ class AnswerFlowTests(unittest.TestCase):
         helper = ScreenAssistant(bridge=bridge, windows=windows, planner=planner,
                                  context_provider=context_provider,
                                  stop_event=threading.Event(),
-                                 allow_cloud_ui=ui, allow_cloud_image=image)
+                                 allow_cloud_ui=ui, allow_cloud_image=image,
+                                 cloud_disclosure_confirm=Mock(return_value=True))
         return helper, planner, bridge, windows, context_provider
 
     def test_local_uses_transient_image_and_browser_text(self):
@@ -176,7 +177,7 @@ class AppIntegrationTests(unittest.TestCase):
             outcome = VoicePilotApp._run_agent(app,'今の画面を説明して',runtime)
         self.assertEqual(outcome.status,'answered')
         agent_run.assert_not_called()
-        app.log.assert_called_with('画面の説明：画面の説明です')
+        app.log.assert_called_with('画面の説明を生成しました（本文は操作ログに残しません）')
 
     def test_completed_answer_has_distinct_ui_state_and_voice_feedback(self):
         self.assertEqual(presentation('answered').title,'画面を説明しました')

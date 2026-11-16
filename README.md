@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.21: single-use approval before cloud screen disclosure (P0-3)
+
+The stored Gemini image checkbox is **not** sufficient to upload a screenshot. Each model-initiated screenshot requires a fresh local GUI confirmation, and a captured image is discarded if the foreground window changes or the five-minute desktop permit expires before model dispatch.
+
+For Gemini screen explanations, a fresh confirmation is required **before reading visible Chrome page paragraphs or taking the monitor screenshot**. Declining or having no confirmation mechanism fails closed. The current-screen answer is shown to the user but no longer copied into the diagnostic log. Cloud prompts no longer include other tab/window titles, even on explicit switch requests. Ollama local-only behavior is unchanged.
+
+This is not automatic privacy masking: screenshots may include notifications, other windows and secrets, and cloud-transferred data cannot be recalled. Windows real-device validation and an authentic signed release are still outstanding. See [cloud disclosure safety](docs/CLOUD_DISCLOSURE.md).
+
 ## v0.23.20: revoke in-progress dictation at each Windows input unit
 
 Normal GUI dictation now rechecks the volatile desktop permit and stop event before restoring the target, after restoration, before any Chrome dictation request, and before **each UTF-16 input unit** during native Windows dictation. The existing pinned-editor guard remains. Chrome requests already in flight and input already delivered cannot be undone; short OS scheduling races remain. No new cloud data or disk logging is introduced.
