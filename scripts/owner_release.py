@@ -219,6 +219,13 @@ def prepare_signed_candidate(source_zip: Path, key_path: Path, password: bytes,
                     shutil.copyfileobj(src, dst, length=64 * 1024)
                     dst.flush()
                     os.fsync(dst.fileno())
+            # Verify the bytes at their FINAL destination too; a short write
+            # or tampering during copying must not produce an approved ZIP.
+            final, _ = signed_migration.prepare_signed_migration(
+                target / candidate.name, target / detached.name, public_hex, fingerprint
+            )
+            if final.zip_digest != verified.zip_digest:
+                raise OfflineSignerError("配置後の署名付きZIPが元の検証結果と異なります")
             return SigningResult(target / candidate.name,
                                  target / detached.name, public_hex, fingerprint)
         except BaseException:
