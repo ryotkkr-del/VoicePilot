@@ -215,10 +215,30 @@ class SignedUpdaterTests(unittest.TestCase):
             updater.apply_pending(self.root, self.cache)
         self.assert_unchanged()
 
+    def test_unconfigured_signer_rejects_new_updates_before_download(self):
+        release, envelope = self.signed_release()
+        downloader = Mock()
+        with patch.object(updater, "PINNED_ED25519_PUBLIC_KEY_HEX", ""):
+            with self.assertRaisesRegex(updater.UpdateError, "公開鍵が未設定"):
+                updater.check_and_stage(
+                    self.root, self.cache, force=True,
+                    fetch_release=lambda _: release, fetch_signature=lambda _: envelope,
+                    download=downloader,
+                )
+        downloader.assert_not_called()
+        self.assertFalse((self.cache / "pending.json").exists())
+        self.assert_unchanged()
+
     def test_legacy_unsigned_pending_is_rejected_after_key_provisioning(self):
         release, envelope = self.signed_release()
-        with patch.object(updater, "PINNED_ED25519_PUBLIC_KEY_HEX", ""):
-            self.assertEqual(self.stage(release, envelope), "downloaded")
+        self.assertEqual(self.stage(release, envelope), "downloaded")
+        pending_file = self.cache / "pending.json"
+        pending = json.loads(pending_file.read_text())
+        # Simulate an older unsigned bootstrap's on-disk format without
+        # ever enabling unsigned staging in the revision-3 updater itself.
+        pending.pop("signed_release", None)
+        (self.cache / pending["stage"] / "_signed_release.zip").unlink()
+        pending_file.write_text(json.dumps(pending))
         with self.assertRaises(updater.UpdateError):
             updater.apply_pending(self.root, self.cache)
         self.assert_unchanged()
