@@ -1,5 +1,5 @@
 numpy>=1.26,<3
-sounddevice>=0.5,<1
+sounddevice>=0.5.6,<1
 faster-whisper>=1.1,<2
 websockets>=13,<17
 pywinauto>=0.6.9,<1
