@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.13: offline signed-release verification and opt-in migration to a separate folder
+
+Adds `python -m app.signed_migration`: an **offline** verifier requiring a developer Ed25519 public key and its SHA-256 fingerprint authenticated independently of GitHub. It checks the detached signature against the exact ZIP bytes, validates Windows-safe archive paths and contents, and refuses a ZIP whose embedded bootstrap pins any different key. The default is verification-only. With explicit `--install-to` and typed `MIGRATE` confirmation, it prepares a **new, nonexistent folder** under a Windows 11 non-admin account; it never upgrades an existing installation in-place, copies secrets, starts the app, installs packages or downloads files.
+
+**Not yet a signed production release:** current automated ZIP releases have no authenticated developer signature or pinned production key, so the tool correctly rejects them. Independent developer key enrollment, truly signed release publication and real-hardware tests are still required. See [docs/OFFLINE_SIGNED_MIGRATION.md](docs/OFFLINE_SIGNED_MIGRATION.md).
+
 ## v0.23.12: privacy-minimal Windows P0 hardware acceptance evidence
 
 Adds `python -m app.p0_acceptance`, a strictly **read-only** preflight for Windows 11 build, non-admin privilege, Python version, app/Chrome version coherence, immutable bootstrap revision and *presence* (not authenticity) of a pinned developer signing key. Opt-in `--interactive` records only fixed test identifiers and PASS/FAIL/SKIP statuses; it never actuates a PC, records audio, opens user files or sends cloud requests. An optional `--output` creates only a new JSON report, with no window titles, usernames or personal data. A report cannot approve production, even if all answers are PASS.
