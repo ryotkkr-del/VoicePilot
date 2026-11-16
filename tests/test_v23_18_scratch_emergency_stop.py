@@ -25,7 +25,7 @@ class ScratchStopRulesTests(unittest.TestCase):
         controller = Mock()
         with patch.object(smoke, "_physical_escape_down", return_value=True):
             with self.assertRaisesRegex(InterruptedError, "Esc"):
-                smoke.guard_scratch_input(controller, target, 0.0)
+                smoke.guard_scratch_input(controller, target, smoke.time.monotonic())
         controller.foreground_hwnd.assert_not_called()
         controller.dictation_probe.assert_not_called()
 
@@ -75,13 +75,14 @@ class ScratchStopRulesTests(unittest.TestCase):
                 on_chunk()
                 typed.append(character)
 
+        started = smoke.time.monotonic()
         with patch("app.win_actions._send_literal_unicode", side_effect=fake_send), \
                 patch.object(smoke, "_physical_escape_down", side_effect=mock_escape):
             with self.assertRaisesRegex(InterruptedError, "Esc"):
                 controller.dictation_insert(
                     "ABCDEFGH", target.control,
                     extra_guard=lambda: smoke.guard_scratch_input(
-                        fake_controller, target, 0.0
+                        fake_controller, target, started
                     ),
                 )
         self.assertEqual("".join(typed), "ABCD")
@@ -95,7 +96,7 @@ class ScratchStopRulesTests(unittest.TestCase):
         controller.foreground_hwnd.return_value = 777
         with patch.object(smoke, "_physical_escape_down", return_value=False):
             with self.assertRaisesRegex(PermissionError, "ウィンドウ"):
-                smoke.guard_scratch_input(controller, target, 0.0)
+                smoke.guard_scratch_input(controller, target, smoke.time.monotonic())
 
     def test_diagnostic_never_installs_os_wide_keyboard_hook(self):
         from pathlib import Path
