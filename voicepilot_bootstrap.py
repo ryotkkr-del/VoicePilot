@@ -39,7 +39,7 @@ MAX_FILES = 400
 CHECK_INTERVAL = 6 * 60 * 60
 _REQUIRED = {"VERSION", "voicepilot_bootstrap.py", "setup_and_run.bat", "app/main.py", "app/__init__.py", "chrome-extension/manifest.json", "requirements.txt"}
 _ALLOWED_DIRS = ("app/", "chrome-extension/", "tests/", "tests_js/")
-_ALLOWED_FILES = {"VERSION", "requirements.txt", "README.md", "README_JA.md", "run_tests.bat",
+_ALLOWED_FILES = {"VERSION", "requirements.txt", "README.md", "README_JA.md", "run_tests.bat", "try_voicepilot.bat",
                   "voicepilot_bootstrap.py", "setup_and_run.bat", "rollback_update.bat"}
 _BOOTSTRAP_FILES = {"voicepilot_bootstrap.py", "setup_and_run.bat", "rollback_update.bat"}
 _TAG = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
