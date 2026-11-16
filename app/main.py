@@ -76,6 +76,15 @@ def bootstrap_security_revision() -> int:
         return 0
 
 
+def bootstrap_signer_key_pinned() -> bool:
+    """Only reports presence of a pin, not its identity or validity."""
+    try:
+        import voicepilot_bootstrap as bootstrap
+        return bool(getattr(bootstrap, "PINNED_SIGNER_PUBLIC_KEY_B64", ""))
+    except ImportError:
+        return False
+
+
 def load_config():
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     data = dict(DEFAULTS)
@@ -158,8 +167,11 @@ class VoicePilotApp:
                 on_error=self.log,
             )
         self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
-        if bootstrap_security_revision() < 2:
-            self.log("注意：更新基盤が旧版です。更新ZIPの新しい安全検証は未適用です。正式運用・重要データでの使用は避けてください。")
+        revision = bootstrap_security_revision()
+        if revision < 3:
+            self.log("注意：更新基盤が旧版です。Ed25519開発者署名の検証は未適用です。重要データでの正式運用は避けてください。")
+        elif not bootstrap_signer_key_pinned():
+            self.log("安全停止：開発者の信頼済み公開鍵が未設定です。このインストールでは自動更新を拒否します。")
 
     def button(self, parent, text, command, primary=False):
         return tk.Button(parent, text=text, command=command,
