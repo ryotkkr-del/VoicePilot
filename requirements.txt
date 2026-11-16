@@ -1,7 +1,7 @@
 numpy>=1.26,<3
 sounddevice>=0.5,<1
 faster-whisper>=1.1,<2
-websockets>=13,<17
+websockets>=17.4,<18
 pywinauto>=0.6.9,<1
 Pillow>=10,<13
 # Lightweight built-in Windows SAPI speech feedback uses pywin32.
