@@ -9,6 +9,8 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 
+from .control_permit import DesktopControlPermit
+
 from .vision import capture_screen
 
 # Require an explicit question about the CURRENT screen, not an action request.
@@ -76,7 +78,9 @@ def screen_context(context: dict, excerpt: dict | None, pointer: dict | None,
 
 class ScreenAssistant:
     def __init__(self, *, bridge, windows, planner, context_provider: Callable,
-                 stop_event, allow_cloud_ui: bool, allow_cloud_image: bool):
+                 stop_event, allow_cloud_ui: bool, allow_cloud_image: bool,
+                 cloud_disclosure_confirm: Callable[[str], bool] | None = None,
+                 control_permit: DesktopControlPermit | None = None):
         self.bridge = bridge
         self.windows = windows
         self.planner = planner
@@ -84,6 +88,10 @@ class ScreenAssistant:
         self.stop_event = stop_event
         self.allow_cloud_ui = allow_cloud_ui
         self.allow_cloud_image = allow_cloud_image
+        # A saved checkbox is not one-time approval for the current pixels or
+        # visible paragraph text. No confirmation handler means fail closed.
+        self.cloud_disclosure_confirm = cloud_disclosure_confirm
+        self.control_permit = control_permit
 
     def answer(self, question: str) -> str:
         if self.stop_event.is_set():
@@ -96,9 +104,35 @@ class ScreenAssistant:
         if guard is not None:
             guard()
         start_hwnd = self.windows.foreground_hwnd()
+        chrome_visible = bool(self.bridge.connected and self.windows.is_chrome_foreground())
+        # Explicitly approve the current data transfer BEFORE reading page
+        # paragraphs or taking a screenshot. GUI confirmation restores focus,
+        # but we must verify the original target rather than assume it did.
+        wants_sensitive_cloud_observation = (
+            self.planner.provider == "gemini" and
+            (chrome_visible or self.allow_cloud_image)
+        )
+        if wants_sensitive_cloud_observation:
+            if self.cloud_disclosure_confirm is None or not self.cloud_disclosure_confirm(
+                "Geminiに現在の画面情報を送信します。\n\n"
+                + ("表示中のWebページ本文を含む場合があります。\n" if chrome_visible else "")
+                + ("モニターの画像には、他のアプリや通知が写り込む場合があります。\n"
+                   if self.allow_cloud_image else "")
+                + "\n送信する前に機密情報が表示されていないことを確認してください。\n"
+                  "この1回の画面情報送信を許可しますか？"
+            ):
+                raise PermissionError("今回の画面情報送信は承認されませんでした")
+            if self.stop_event.is_set():
+                raise InterruptedError("説明を中止しました")
+            if self.windows.foreground_hwnd() != start_hwnd:
+                raise PermissionError("確認後に画面が切り替わったため送信しません")
+            if guard is not None:
+                guard()
+            if self.control_permit is not None:
+                self.control_permit.require()
         context = self.context_provider()
         excerpt = None
-        if self.bridge.connected and self.windows.is_chrome_foreground():
+        if chrome_visible:
             try:
                 excerpt = self.bridge.call("read_visible", timeout=8)
             except (OSError, RuntimeError, TimeoutError, ValueError):
@@ -142,6 +176,8 @@ class ScreenAssistant:
             raise PermissionError("画面の確認中に操作対象が変わりました。情報を破棄しました")
         if guard is not None:
             guard()
+        if self.control_permit is not None:
+            self.control_permit.require()
         answer = self.planner.explain_screen(question, observation, screenshot)
         if self.stop_event.is_set():
             raise InterruptedError("説明を中止しました")
