@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# Keep production publishing serialized, but let a corrected PR cancel its
+# own obsolete CI instead of waiting behind a hung test from that PR.
 concurrency:
-  group: voicepilot-release
-  cancel-in-progress: false
+  group: voicepilot-release-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test-and-build:
@@ -30,6 +32,7 @@ jobs:
       - name: Install requirements
         run: python -m pip install -r requirements.txt
       - name: Python unit tests
+        timeout-minutes: 4
         run: python -m unittest discover -s tests -q
       - name: Chrome extension unit tests
         shell: pwsh
