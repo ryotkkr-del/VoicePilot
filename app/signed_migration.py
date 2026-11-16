@@ -108,7 +108,8 @@ def _verify_archive_copy(local_zip: Path, signature: Path, key_hex: str,
 
     # Verify a detached signature against the caller's independently
     # authenticated public key, never a key learned from the ZIP itself.
-    digest = hashlib.file_digest(local_zip.open("rb"), "sha256").hexdigest()
+    with local_zip.open("rb") as zip_stream:
+        digest = hashlib.file_digest(zip_stream, "sha256").hexdigest()
     envelope = _read_exact_manifest(signature)
     if (type(envelope.get("schema")) is not int or envelope["schema"] != 1
             or envelope["repository"] != REPO or envelope["version"] != version
