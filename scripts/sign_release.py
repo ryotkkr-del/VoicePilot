@@ -20,11 +20,12 @@ import json
 from pathlib import Path
 import re
 import sys
+import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from voicepilot_bootstrap import REPO, _signing_message, version_tuple
+from voicepilot_bootstrap import REPO, MAX_ARCHIVE_BYTES, _signing_message, version_tuple, extract_checked
 
 
 def sign_archive(archive: Path, key_path: Path, *, password: bytes | None = None,
@@ -42,9 +43,12 @@ def sign_archive(archive: Path, key_path: Path, *, password: bytes | None = None
         raise ValueError("ZIPファイル名がVoicePilot-vX.Y.Z.zipの形式ではありません")
     version = match.group(1)
     version_tuple(version)
-    with zipfile.ZipFile(zip_path) as zf:
-        if zf.read("VERSION").decode("utf-8").strip() != version:
-            raise ValueError("ZIPのVERSIONとファイル名が一致しません")
+    if zip_path.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("署名対象のZIPがサイズ上限を超えています")
+    # Check archive content/layout before putting the developer's signature
+    # on it. Signing an invalid archive is worse than refusing it.
+    with tempfile.TemporaryDirectory(prefix="voicepilot-sign-check-") as temporary:
+        extract_checked(zip_path, Path(temporary), version)
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     signer = serialization.load_pem_private_key(key.read_bytes(), password=password)
     if not isinstance(signer, Ed25519PrivateKey):
@@ -79,7 +83,7 @@ def main() -> int:
     password = getpass.getpass("Ed25519 private key password: ").encode() if args.ask_passphrase else None
     try:
         result = sign_archive(args.archive, args.key, password=password, output=args.output)
-    except (OSError, ValueError, zipfile.BadZipFile, KeyError) as exc:
+    except (OSError, ValueError, TypeError, zipfile.BadZipFile, KeyError) as exc:
         print("Signature creation refused; confirm the ZIP, key location and passphrase.", file=sys.stderr)
         return 1
     print(f"Public signature file created: {result}")
