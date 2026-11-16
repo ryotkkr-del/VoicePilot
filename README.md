@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.18: P0-2 opt-in scratch Notepad Escape stop and input deadline
+
+The manually authorized **scratch-only Notepad diagnostic** now checks the physical Escape key before every UTF-16 input unit. Holding Escape cancels remaining simulated input; it also stops after 20 seconds or if key-state inspection fails. It retains the v0.23.17 pinned HWND / actual process / unique scratch document / focused editor checks. It does not install system-wide keyboard hooks, elevate privileges, or modify normal dictation behavior.
+
+Already-sent input cannot be undone, and a focus switch between target checking and native SendInput cannot be fully eliminated. This does **not** constitute real-hardware acceptance or safe unattended PC automation. The GitHub prototype release remains independently unsigned, with owner-signed distribution and safe bootstrap migration outstanding. See [docs/P0_HARDWARE_ACCEPTANCE.md](docs/P0_HARDWARE_ACCEPTANCE.md).
+
 ## v0.23.17: P0-1/P0-5 scratch Notepad focus pinning
 
 The explicit opt-in `tests/windows_safety_check.py --interactive-notepad` test now pins the **real notepad.exe process, foreground HWND, unique disposable document token, and UIA caret identity**. It rechecks the same target **before every UTF-16 input unit**, rejecting any switch to another document, window or process. The characters are harmless literal test text, not hotkeys; no save is performed. The optional stricter callback leaves ordinary VoicePilot dictation batching unchanged.
