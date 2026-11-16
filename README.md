@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.12: privacy-minimal Windows P0 hardware acceptance evidence
+
+Adds `python -m app.p0_acceptance`, a strictly **read-only** preflight for Windows 11 build, non-admin privilege, Python version, app/Chrome version coherence, immutable bootstrap revision and *presence* (not authenticity) of a pinned developer signing key. Opt-in `--interactive` records only fixed test identifiers and PASS/FAIL/SKIP statuses; it never actuates a PC, records audio, opens user files or sends cloud requests. An optional `--output` creates only a new JSON report, with no window titles, usernames or personal data. A report cannot approve production, even if all answers are PASS.
+
+The detailed manual protocol is [docs/P0_HARDWARE_ACCEPTANCE.md](docs/P0_HARDWARE_ACCEPTANCE.md). **Windows CI tests the reporter, not real Windows microphone/desktop operations.** Production signer key enrollment, legacy bootstrap migration and real-device tests remain outstanding.
+
 ## v0.23.11: fail closed without a verified developer signing key
 
 The revision-3 immutable updater now **refuses automatic updates** unless a genuine Ed25519 developer public key has been independently verified and pinned. No empty-key fallback to GitHub-only SHA-256 remains. Any unsigned pending stage from an older bootstrap is also rejected, and every staged file is rechecked against a ZIP whose SHA-256 is bound to the Ed25519 signature. Existing updater/rollback tests now use ephemeral signed ZIPs; the Windows key-path safety check is normalized.
