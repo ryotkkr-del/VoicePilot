@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.20: revoke in-progress dictation at each Windows input unit
+
+Normal GUI dictation now rechecks the volatile desktop permit and stop event before restoring the target, after restoration, before any Chrome dictation request, and before **each UTF-16 input unit** during native Windows dictation. The existing pinned-editor guard remains. Chrome requests already in flight and input already delivered cannot be undone; short OS scheduling races remain. No new cloud data or disk logging is introduced.
+
+This is a **mock-test-backed prototype change**, not a Windows hardware safety certification. The public ZIP is still independently unsigned. Continue to use the microphone-only `try_voicepilot.bat` for first trials; see [hardware acceptance](docs/P0_HARDWARE_ACCEPTANCE.md).
+
 ## v0.23.19: normal desktop GUI now starts locked by default
 
 A new **volatile, five-minute, opt-in desktop authorization** now protects the regular VoicePilot GUI. On every launch it starts locked. Only an explicit click on the local GUI's permission button followed by confirmation permits the normal voice/text/agent/Chrome/dictation operations; neither config files, models, browser content nor voice can arm it. Stop (including keyboard and hands-free cancellation), closing or expiry revokes authorization. The shared fast/reference/AI dispatch boundary rechecks the permit before each effect, and direct dictation/handoff paths are separately guarded.
