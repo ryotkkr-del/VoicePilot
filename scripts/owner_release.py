@@ -117,7 +117,8 @@ def generate_encrypted_key(path: Path, password: bytes) -> tuple[str, str]:
 
 def _pin_bootstrap(path: Path, public_key_hex: str) -> None:
     """Modify only one literal assignment in the extracted candidate ZIP."""
-    if signed_migration._literal_constant(path, "BOOTSTRAP_SECURITY_REVISION") < 3:
+    revision = signed_migration._literal_constant(path, "BOOTSTRAP_SECURITY_REVISION")
+    if type(revision) is not int or revision < 3:
         raise OfflineSignerError("旧bootstrapを署名付きリリースとして出せません")
     if signed_migration._literal_constant(path, "PINNED_ED25519_PUBLIC_KEY_HEX") != "":
         raise OfflineSignerError("既に公開鍵が設定されています。署名元を再確認してください")
