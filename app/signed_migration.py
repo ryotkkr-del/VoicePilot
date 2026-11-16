@@ -40,7 +40,7 @@ _REQUIRED = frozenset({
 })
 _ALLOWED_FILES = frozenset({
     "VERSION", "requirements.txt", "README.md", "README_JA.md",
-    "run_tests.bat", "voicepilot_bootstrap.py", "setup_and_run.bat",
+    "run_tests.bat", "try_voicepilot.bat", "voicepilot_bootstrap.py", "setup_and_run.bat",
     "rollback_update.bat",
 })
 _ALLOWED_DIRS = ("app/", "chrome-extension/", "tests/", "tests_js/")
