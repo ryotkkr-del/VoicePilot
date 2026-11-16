@@ -139,6 +139,23 @@ class GUIWorkerBoundaryTests(unittest.TestCase):
         view._set_preview.assert_not_called()
         view.record_btn.configure.assert_called_with(state="normal")
 
+    def test_multiple_completions_cannot_deadlock_if_ui_poll_is_delayed(self):
+        view = self.view()
+        view.recognizer.transcribe.side_effect = ["古い結果", "メモ帳を開いて"]
+        # Regression: a bounded queue previously blocked the second worker
+        # indefinitely when a Tk callback could not run.
+        thread = threading.Thread(target=lambda: (
+            view._transcribe(np.ones(1600, np.float32), 2, False),
+            view._transcribe(np.ones(1600, np.float32), 3, False),
+        ))
+        thread.start()
+        thread.join(timeout=2)
+        self.assertFalse(thread.is_alive(), "worker must never wait for Tk queue space")
+        view._poll_worker()
+        self.assertFalse(view.working)
+        self.assertEqual(view._set_output.call_args.args[0], "メモ帳を開いて")
+        self.assertEqual(view._set_preview.call_args.args[0][0], "recognized")
+
     def test_ui_polls_again_if_worker_not_ready(self):
         view = self.view()
         view._poll_worker()
