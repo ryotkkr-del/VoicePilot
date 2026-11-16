@@ -98,7 +98,10 @@ class AppDictationTests(unittest.TestCase):
         self.assertIsNotNone(app.dictation_target)
         result = VoicePilotApp._run_dictation_command(app, 'これはテスト文章です')
         self.assertEqual(result.status, 'unverified')
-        app.dictation.insert.assert_called_once_with(app.dictation_target, 'これはテスト文章です')
+        app.dictation.insert.assert_called_once()
+        called = app.dictation.insert.call_args
+        self.assertEqual(called.args, (app.dictation_target, 'これはテスト文章です'))
+        self.assertTrue(callable(called.kwargs["checkpoint"]))
         self.assertFalse(any('これはテスト' in c.args[0] for c in app.log.call_args_list))
         result = VoicePilotApp._run_dictation_command(app, '入力終了')
         self.assertEqual(result.status, 'completed')
