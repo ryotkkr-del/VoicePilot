@@ -1300,7 +1300,9 @@ class VoicePilotApp:
                 bridge=self.bridge, windows=self.windows, planner=planner,
                 context_provider=observer._context, stop_event=self.stop_event,
                 allow_cloud_ui=runtime["allow_cloud_ui"],
-                allow_cloud_image=runtime["allow_cloud_image"])
+                allow_cloud_image=runtime["allow_cloud_image"],
+                cloud_disclosure_confirm=self.confirm,
+                control_permit=self.control_permit)
             try:
                 answer = assistant.answer(command)
             except InterruptedError:
