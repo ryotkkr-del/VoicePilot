@@ -11,12 +11,14 @@ file paths, screenshots, microphone data and user content.
 from __future__ import annotations
 
 import argparse
+import ctypes
 from dataclasses import dataclass
 import re
 import json
 import os
 import shutil
 from pathlib import Path
+from collections.abc import Callable
 import subprocess
 import sys
 import tempfile
@@ -249,6 +251,49 @@ def pin_scratch_notepad_target(controller, token: str) -> ScratchNotepadTarget:
     return candidate
 
 
+SCRATCH_INPUT_TIMEOUT_SECONDS = 20.0
+
+
+def _physical_escape_down() -> bool:
+    """Read-only Win32 key state, without installing a global keyboard hook.
+
+    This applies ONLY to the opt-in scratch Notepad test. If key-state
+    inspection is unavailable, stop rather than continuing blind input.
+    """
+    if os.name != "nt":
+        raise PermissionError("Windows以外では安全停止を確認できません")
+    try:
+        user32 = ctypes.windll.user32
+        user32.GetAsyncKeyState.argtypes = (ctypes.c_int,)
+        user32.GetAsyncKeyState.restype = ctypes.c_short
+        return bool(int(user32.GetAsyncKeyState(0x1B)) & 0x8000)
+    except (AttributeError, OSError, ValueError) as exc:
+        raise PermissionError("Escキーの状態を確認できません") from exc
+
+
+def assert_scratch_input_active(
+    started: float, *, key_down: Callable[[], bool] | None = None,
+    now: Callable[[], float] = time.monotonic,
+) -> None:
+    """Refuse new dummy input after Escape or an elapsed test deadline.
+
+    Does not cancel a native Win32 SendInput already dispatched. The check
+    runs before every UTF-16 input unit, not by installing an OS-wide hook.
+    """
+    elapsed = now() - started
+    if not 0 <= elapsed <= SCRATCH_INPUT_TIMEOUT_SECONDS:
+        raise InterruptedError("テスト用の文字入力が制限時間を超えました")
+    if (key_down or _physical_escape_down)():
+        raise InterruptedError("Escによるメモ帳試験の停止")
+
+
+def guard_scratch_input(controller, target: ScratchNotepadTarget,
+                        started: float) -> None:
+    """One per-character stop guard, then strict target validation."""
+    assert_scratch_input_active(started)
+    assert_scratch_notepad_target(controller, target)
+
+
 def interactive_notepad() -> str:
     """Only if user agrees: launch a scratch Notepad then type one harmless line.
 
@@ -278,6 +323,8 @@ def interactive_notepad() -> str:
             return "SKIP:Notepad could not be launched"
         print("メモ帳のテスト用ウィンドウが開いたら、空の本文をクリックしてカーソルを置いてください。")
         print("7秒後に入力先のプロセス・文書名・カーソルを検証します。")
+        print("入力中はEscキーを押し続けると残りの入力を中断します。")
+        print("20秒で自動停止します（送信済みの文字は元に戻しません）。")
         time.sleep(7)
         controller = win.WindowsController()
         try:
@@ -286,15 +333,18 @@ def interactive_notepad() -> str:
             # Re-check target HWND, actual process, exact scratch-document
             # token and UIA caret BEFORE EACH UTF-16 unit is synthesized.
             message = "VoicePilot dummy: ^s +{DELETE} %{F4}"
+            started = time.monotonic()
             controller.dictation_insert(
                 message, target.control,
-                extra_guard=lambda: assert_scratch_notepad_target(controller, target),
+                extra_guard=lambda: guard_scratch_input(controller, target, started),
             )
-            assert_scratch_notepad_target(controller, target)
+            guard_scratch_input(controller, target, started)
+        except InterruptedError:
+            return "SKIP:cancelled with Escape or timeout"
         except (OSError, RuntimeError, ValueError, PermissionError):
             return "SKIP:editor focus or document could not be safely verified"
         print("テスト用メモ帳に記号がそのまま表示されたか、目視で確認してください。")
-        print("入力先は各文字の直前に再確認しましたが、フォーカス競合を完全には防げません。")
+        print("入力先とEsc停止を各文字の直前に確認しました。フォーカス競合を完全には防げません。")
         print("保存操作や他ウィンドウへの意図的な操作は行っていません。")
         return "MANUAL:typed into verified scratch Notepad; inspect display"
     finally:
