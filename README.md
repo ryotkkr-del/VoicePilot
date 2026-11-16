@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.16: preview deterministic voice commands without executing them
+
+The opt-in `try_voicepilot.bat` first-run microphone UI now displays a **read-only candidate action preview** for a small, exact set of existing deterministic local commands (e.g. launch Notepad, scroll, navigate back). Unknown phrases stay unknown; this is not full AI planning, foreground verification, approval or a live execution test. Search terms and other user arguments are never echoed into preview labels; microphone transcripts are still displayed separately in the local GUI and are not saved.
+
+The audio model worker never calls Tk APIs, including `root.after`; it delivers its result through an in-memory queue that the UI thread polls. Canceled or closed UI generations discard both the transcript and candidate preview. This improves isolation without claiming native inference is immediately interruptible.
+
+**No actual PC/browser operations** are enabled in this mode. Official GitHub ZIPs remain unsigned prototypes, and real Windows device tests, owner signer enrollment and safe bootstrap migration remain incomplete. See [docs/FIRST_TRIAL_GUIDE.md](docs/FIRST_TRIAL_GUIDE.md).
+
 ## v0.23.15: opt-in first-run microphone-only trial (P0-5)
 
 The distribution now includes `try_voicepilot.bat` and a separate `python -m app.first_trial` UI that only captures up to eight seconds of audio after a button click and runs **local** Japanese Whisper transcription. It never loads the desktop action agent, browser bridge, cloud planner or updater; no transcript or audio is saved. It requires Windows 11 non-admin execution.
