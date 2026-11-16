@@ -109,8 +109,11 @@ class Microphone:
 
 
 class SpeechRecognizer:
-    def __init__(self, model_name="small"):
+    def __init__(self, model_name="small", *, local_files_only: bool = False):
         self.model_name = model_name
+        # Safe first-run trial must not silently fetch model weights over the
+        # network. Normal VoicePilot retains the existing first-run behavior.
+        self.local_files_only = bool(local_files_only)
         self.model = None
 
     def transcribe(self, samples: np.ndarray) -> str:
@@ -127,7 +130,8 @@ class SpeechRecognizer:
             # not make the rest of Windows unusable while transcribing.
             threads = min(3, max(1, (os.cpu_count() or 4) // 2))
             self.model = WhisperModel(self.model_name, device="cpu", compute_type="int8",
-                                      cpu_threads=threads, num_workers=1)
+                                      cpu_threads=threads, num_workers=1,
+                                      local_files_only=self.local_files_only)
         segments, _ = self.model.transcribe(
             samples, language="ja", beam_size=5, vad_filter=True,
             condition_on_previous_text=False,
