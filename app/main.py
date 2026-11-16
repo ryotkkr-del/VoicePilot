@@ -165,8 +165,10 @@ class VoicePilotApp:
         self.root.after(700, self.refresh_connection)
         self.root.after(10_000, self.release_idle_model)
         self.root.after(10_000, self._refresh_control_lock_timer)
-        # Check stable GitHub Releases in the background; no GUI or LLM overhead.
-        self.root.after(12_000, self._start_update_check)
+        # No background update network requests until a verified developer
+        # trust anchor is configured in the immutable local bootstrap.
+        if bootstrap_security_revision() >= 3 and bootstrap_signing_key_configured():
+            self.root.after(12_000, self._start_update_check)
         if sys.platform == "win32":
             register_windows_hotkey(
                 lambda: self.ui.post(self.toggle_record),
@@ -502,6 +504,10 @@ class VoicePilotApp:
         save_config(self.config)
 
     def _start_update_check(self):
+        # Prevent even a network check on an unsigned/legacy installation.
+        # The trusted immutable bootstrap is never silently replaced here.
+        if bootstrap_security_revision() < 3 or not bootstrap_signing_key_configured():
+            return
         def work():
             try:
                 from voicepilot_bootstrap import check_and_stage, UpdateError
