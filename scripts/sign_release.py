@@ -14,13 +14,14 @@ import hashlib
 from pathlib import Path
 import re
 import sys
+import tempfile
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from voicepilot_bootstrap import _signed_payload, version_tuple
+from voicepilot_bootstrap import _signed_payload, version_tuple, extract_checked, MAX_ARCHIVE_BYTES
 
 
 def sign_archive(archive: Path, key_file: Path, password: bytes | None) -> tuple[Path, str]:
@@ -34,13 +35,22 @@ def sign_archive(archive: Path, key_file: Path, password: bytes | None) -> tuple
         raise ValueError("ZIP名はVoicePilot-vX.Y.Z.zipの形式にしてください")
     tag = match.group(1)
     version_tuple(tag)
+    if archive.stat().st_size > MAX_ARCHIVE_BYTES:
+        raise ValueError("ZIPのサイズが更新上限を超えています")
+    # Never sign an archive the updater would reject or whose VERSION
+    # differs from the intended release tag.
+    with tempfile.TemporaryDirectory(prefix="voicepilot-sign-check-") as directory:
+        extract_checked(archive, Path(directory), tag[1:])
     private = serialization.load_pem_private_key(key_file.read_bytes(), password=password)
     if not isinstance(private, Ed25519PrivateKey):
         raise ValueError("Ed25519の秘密鍵のみ使用できます")
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     signature = private.sign(_signed_payload(tag, digest))
     sidecar = archive.with_name(archive.name + ".sig")
-    sidecar.write_text(base64.b64encode(signature).decode("ascii"), encoding="ascii")
+    # A signed release must be immutable; never silently replace an already
+    # issued detached signature for the same ZIP/version.
+    with sidecar.open("x", encoding="ascii") as output:
+        output.write(base64.b64encode(signature).decode("ascii"))
     public_key = private.public_key().public_bytes(
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
