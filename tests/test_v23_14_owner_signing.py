@@ -89,7 +89,7 @@ class OwnerSigningTests(unittest.TestCase):
         result = self.build()
         self.assertEqual(result.public_key_hex, self.pub)
         self.assertEqual(result.public_key_fingerprint, self.fingerprint)
-        self.assertEqual(result.archive.parent, self.output.resolve())
+        self.assertTrue(result.archive.parent.samefile(self.output))
         self.assertEqual(len(list(self.output.iterdir())), 2)
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(), original)
         self.assertEqual((self.old / "settings.json").read_text(), "DO NOT TOUCH")
