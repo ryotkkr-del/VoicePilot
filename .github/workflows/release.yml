@@ -45,7 +45,7 @@ jobs:
         run: python scripts/build_release.py
       - name: Retain unsigned release candidate for offline signing
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unsigned-voicepilot-release-candidate
           path: dist/VoicePilot-v*.zip
