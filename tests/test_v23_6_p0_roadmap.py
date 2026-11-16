@@ -118,6 +118,9 @@ class PrivacyRegressions(unittest.TestCase):
 
     def test_text_ui_does_not_log_submitted_instruction(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
         app.busy = False
         app.recording = False
         app.command = Mock()
