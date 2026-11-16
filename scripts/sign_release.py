@@ -36,7 +36,7 @@ def sign_archive(archive: Path, key_path: Path, *, password: bytes | None = None
 
     zip_path = Path(archive).resolve(strict=True)
     key = Path(key_path).resolve(strict=True)
-    if key.is_relative_to(ROOT):
+    if key.is_relative_to(Path(ROOT).resolve()):
         raise ValueError("署名秘密鍵をVoicePilotのリポジトリ内に保存しないでください")
     match = re.fullmatch(r"VoicePilot-v(\d+\.\d+\.\d+)\.zip", zip_path.name)
     if not match:
