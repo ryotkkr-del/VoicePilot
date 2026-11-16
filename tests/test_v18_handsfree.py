@@ -67,6 +67,10 @@ class FakeRoot:
 class AppLifecycleTests(unittest.TestCase):
     def minimal(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
+        app._refresh_control_lock_ui = Mock()
         app.handsfree = HandsFreeSession(clock=lambda: 0)
         app._handsfree_capture = False
         app._capture_generation = 0

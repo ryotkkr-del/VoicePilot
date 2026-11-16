@@ -16,6 +16,7 @@ import webbrowser
 from tkinter import ttk, messagebox
 
 from .agent import VoiceAgent, RunOutcome
+from .control_permit import DesktopControlPermit
 from .task_policy import LongTaskLimits
 from .planner import Planner
 from .audio import Microphone, SpeechRecognizer
@@ -127,6 +128,8 @@ class VoicePilotApp:
         self.root = root
         self.ui = UIDispatcher(root)
         self.config = load_config()
+        # Never persist permission: all process launches begin locked.
+        self.control_permit = DesktopControlPermit()
         self.bridge = BrowserBridge(self.config["token"])
         self.bridge.start()
         self._extension_version_checked = False
@@ -161,15 +164,18 @@ class VoicePilotApp:
         self.root.after(500, self.track_foreground)
         self.root.after(700, self.refresh_connection)
         self.root.after(10_000, self.release_idle_model)
-        # Check stable GitHub Releases in the background; no GUI or LLM overhead.
-        self.root.after(12_000, self._start_update_check)
+        self.root.after(10_000, self._refresh_control_lock_timer)
+        # No background update network requests until a verified developer
+        # trust anchor is configured in the immutable local bootstrap.
+        if bootstrap_security_revision() >= 3 and bootstrap_signing_key_configured():
+            self.root.after(12_000, self._start_update_check)
         if sys.platform == "win32":
             register_windows_hotkey(
                 lambda: self.ui.post(self.toggle_record),
                 lambda: self.ui.post(self.abort),
                 on_error=self.log,
             )
-        self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
+        self.log("PC操作は初期状態でロックされています。5分間の一時許可が必要です。")
         revision = bootstrap_security_revision()
         if revision < 3:
             self.log("注意：旧bootstrapは署名付き更新を検証しません。アプリだけ更新しても安全な更新基盤には切り替わりません。")
@@ -224,6 +230,18 @@ class VoicePilotApp:
         self.settings_button = self.button(head, "設定", self.toggle_settings)
         self.settings_button.pack(side="right", padx=(0,8))
         tk.Label(shell,text="声でPCを操作。難しい画面では画像も認識します。",font=(FONT,10),bg=BG,fg=MUTED).pack(anchor="w",pady=(1,5))
+        lock_card = self.card(shell, 8)
+        lock_row = tk.Frame(lock_card, bg=WHITE)
+        lock_row.pack(fill="x")
+        self.control_lock_label = tk.Label(
+            lock_row, text="● PC操作はロック中", bg=WHITE, fg="#B91C1C",
+            font=(FONT, 10, "bold"))
+        self.control_lock_label.pack(side="left")
+        self.control_lock_button = self.button(
+            lock_row, "5分間だけ操作を許可", self.toggle_control_permission)
+        self.control_lock_button.pack(side="right")
+        tk.Label(lock_card, text="起動時は操作禁止。停止で再ロックします。",
+                 bg=WHITE, fg=MUTED, font=(FONT, 9)).pack(anchor="w", pady=(5, 0))
 
         talk = self.card(shell, 10)
         row = tk.Frame(talk,bg=WHITE)
@@ -486,6 +504,10 @@ class VoicePilotApp:
         save_config(self.config)
 
     def _start_update_check(self):
+        # Prevent even a network check on an unsigned/legacy installation.
+        # The trusted immutable bootstrap is never silently replaced here.
+        if bootstrap_security_revision() < 3 or not bootstrap_signing_key_configured():
+            return
         def work():
             try:
                 from voicepilot_bootstrap import check_and_stage, UpdateError
@@ -635,6 +657,53 @@ class VoicePilotApp:
         if self.mini and self.mini.winfo_exists():
             self.mini_rec_button.configure(text=title,bg=color)
 
+    def _refresh_control_lock_timer(self):
+        if self._closing:
+            return
+        self._refresh_control_lock_ui()
+        self.root.after(10_000, self._refresh_control_lock_timer)
+
+    def _refresh_control_lock_ui(self):
+        if self.control_permit.allowed():
+            self.control_lock_label.configure(
+                text="● PC操作を一時許可中（最大5分）", fg="#166534")
+            self.control_lock_button.configure(text="操作をロック")
+        else:
+            self.control_lock_label.configure(
+                text="● PC操作はロック中", fg="#B91C1C")
+            self.control_lock_button.configure(text="5分間だけ操作を許可")
+
+    def toggle_control_permission(self):
+        """Only a click in this local GUI can arm desktop execution."""
+        if self.control_permit.allowed():
+            self.control_permit.revoke()
+            self.abort()
+            self._refresh_control_lock_ui()
+            self.log("PC操作を再ロックしました。実行中の処理にも停止を要求しました")
+            return
+        if self.busy or self.recording or self._closing:
+            self.log("録音や作業が終了してからPC操作を許可してください")
+            return
+        if not messagebox.askyesno(
+                "PC操作の一時許可 · VoicePilot",
+                "この試作アプリはWindows実機で正式な安全検証を完了していません。\n"
+                "外部アプリ・ブラウザ・ファイルを操作する場合があります。\n"
+                "重要な文書を閉じ、ダミーデータでのみ試してください。\n\n"
+                "この起動中に限り、PC操作を最大5分間許可しますか？",
+                parent=self.root):
+            self.log("PC操作のロックを維持しました")
+            return
+        self.control_permit.arm()
+        self._refresh_control_lock_ui()
+        self.log("PC操作を最大5分間だけ許可しました。停止・終了すると再ロックされます")
+
+    def _control_locked(self) -> bool:
+        if self.control_permit.allowed():
+            return False
+        self.log("PC操作はロック中です。GUIから明示的に許可してください")
+        self._refresh_control_lock_ui()
+        return True
+
     def toggle_handsfree(self):
         """Explicitly opt into a time-limited sequential microphone session."""
         if self.handsfree.enabled:
@@ -642,6 +711,8 @@ class VoicePilotApp:
             return
         if self.busy or self.recording or self._closing:
             self.log("処理が終了してからハンズフリーを開始してください")
+            return
+        if self._control_locked():
             return
         self.handsfree.start()
         self.stop_event.clear()
@@ -693,6 +764,9 @@ class VoicePilotApp:
         if (self._closing or not self.handsfree.is_current(generation)
                 or self.busy or self.recording):
             return
+        if not self.control_permit.allowed():
+            self.stop_handsfree("PC操作ロックによってハンズフリーを終了しました")
+            return
         if self.handsfree.expired():
             self.stop_handsfree("3分間音声操作がなかったため、ハンズフリーを終了しました")
             return
@@ -720,6 +794,8 @@ class VoicePilotApp:
     def toggle_record(self):
         if self.recording:
             self._stop_record()
+            return
+        if not self.busy and self._control_locked():
             return
         if self.busy:
             if self._record_after_cancel:
@@ -919,6 +995,8 @@ class VoicePilotApp:
             self.log("文章入力モードを終了しました")
             self._apply_phase()
             return
+        if self._control_locked():
+            return
         self.busy = True
         self.stop_event.clear()
         self.set_phase("acting")
@@ -943,6 +1021,11 @@ class VoicePilotApp:
             if intent is None:
                 return RunOutcome("incomplete", "文章入力の指示を認識できませんでした")
             action, text = intent
+            if action != "stop" and not self.control_permit.allowed():
+                # Direct dictation does not use VoiceAgent. Check before
+                # any editor inspection, focus switch or text insertion.
+                self.dictation_target = None
+                return RunOutcome("incomplete", "PC操作ロック中のため入力しません")
             if action == "start":
                 self.restore_target()
                 self.dictation_target = self.dictation.start()
@@ -979,7 +1062,7 @@ class VoicePilotApp:
 
     def explain_current_screen(self):
         """One click to ask about the screen, even during dictation mode."""
-        if self.busy or self.recording:
+        if self.busy or self.recording or self._control_locked():
             return
         self.busy = True
         self.stop_event.clear()
@@ -1006,6 +1089,8 @@ class VoicePilotApp:
         """Explicit per-task opt-in; never enabled by a spoken web page or model."""
         if self.busy or self.recording or self.dictation_target is not None:
             return
+        if self._control_locked():
+            return
         command = self.command.get().strip()
         if not command:
             self.log("長い作業の目標を入力してください")
@@ -1031,6 +1116,8 @@ class VoicePilotApp:
 
     def send_text(self):
         if self.busy or self.recording:return
+        if self._control_locked():
+            return
         command=self.command.get().strip()
         if not command:
             self.log("音声で話すか、入力欄に指示を入力してください")
@@ -1047,7 +1134,7 @@ class VoicePilotApp:
 
     def send_to_chatgpt(self):
         """Explicit handoff button: never submits to ChatGPT or runs a planner."""
-        if self.busy or self.recording:
+        if self.busy or self.recording or self._control_locked():
             return
         prompt = self.command.get().strip()
         if not prompt:
@@ -1079,6 +1166,8 @@ class VoicePilotApp:
             raise RuntimeError("クリップボードにコピーできませんでした") from errors[0]
 
     def _run_chatgpt(self, prompt: str) -> RunOutcome:
+        if not self.control_permit.allowed():
+            return RunOutcome("incomplete", "PC操作ロック中のため外部連携しません")
         result = prepare_chatgpt_handoff(
             prompt, self.bridge, self._clipboard_copy, webbrowser.open,
             cancelled=self.stop_event.is_set,
@@ -1162,6 +1251,8 @@ class VoicePilotApp:
             gate.resume()
             self.ui.post(lambda: (self.log("音声で作業を再開しました"), self._apply_phase()))
         elif intent in {"cancel", "end"}:
+            self.control_permit.revoke()  # thread-safe; no Tk from microphone
+            self.ui.post(self._refresh_control_lock_ui)
             # Cancellation is cooperative: an in-flight Windows/UIA/LLM call
             # may already have committed. Do not advertise an instant rollback.
             self.stop_event.set()
@@ -1172,6 +1263,8 @@ class VoicePilotApp:
                                   self._apply_phase()))
 
     def _run_agent(self,command,runtime,autonomous=False):
+        if not self.control_permit.allowed():
+            return RunOutcome("incomplete", "PC操作はロック中です。GUIで明示的に許可してください")
         self.set_phase("acting")
         addressed = extract_chatgpt_request(command)
         if addressed is not None:
@@ -1216,7 +1309,8 @@ class VoicePilotApp:
                              runtime["allow_cloud_ui"],self.stop_event,
                              max_steps=(28 if autonomous else 12),
                              session=self.session,allow_cloud_image=runtime["allow_cloud_image"],
-                             action_gate=gate, autonomous=autonomous)
+                             action_gate=gate, autonomous=autonomous,
+                             control_permit=self.control_permit)
             return agent.run(command)
         finally:
             # The regular microphone must not resume until this monitor has
@@ -1233,6 +1327,10 @@ class VoicePilotApp:
             self.stop_handsfree("停止ボタンでハンズフリーを終了しました")
         if not keep_record_request:
             self._record_after_cancel = False
+        # A Stop (including Ctrl+Alt+Esc) always revokes future actions.
+        # Clearing stop_event later cannot implicitly re-arm this permit.
+        self.control_permit.revoke()
+        self._refresh_control_lock_ui()
         if not self.busy and not self.recording:
             if getattr(self, "dictation_target", None) is not None:
                 self.dictation_target = None
@@ -1256,6 +1354,7 @@ class VoicePilotApp:
 
     def close(self):
         self._closing = True
+        self.control_permit.revoke()
         self.handsfree.stop()
         monitor = getattr(self, "_interrupt_monitor", None)
         if monitor is not None:

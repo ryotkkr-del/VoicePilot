@@ -189,6 +189,9 @@ class MonitorTests(unittest.TestCase):
 
     def test_no_microphone_until_explicit_handsfree(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
         app.handsfree = Mock(enabled=False)
         app.recognizer = Mock()
         app.set_phase = Mock()

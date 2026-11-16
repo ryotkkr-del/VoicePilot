@@ -23,6 +23,9 @@ class ExplicitRoutingTests(unittest.TestCase):
 
     def test_no_cloud_planner_for_explicit_chatgpt(self):
         app = object.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()  # simulate explicitly authorized test
         app.set_phase = Mock()
         app.restore_target = Mock()
         app._run_chatgpt = Mock(return_value=RunOutcome("handoff", "準備済み"))

@@ -79,6 +79,9 @@ class DictationControllerTests(unittest.TestCase):
 class AppDictationTests(unittest.TestCase):
     def minimal(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
         app.dictation_target = None
         app.dictation = Mock()
         app.dictation.start.return_value = DictationTarget('windows', 777, 'Edit:123')
