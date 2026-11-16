@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import time
 from functools import lru_cache
+from collections.abc import Callable
 
 APP_COMMANDS = {
     "notepad": ["notepad.exe"], "メモ帳": ["notepad.exe"],
@@ -378,8 +379,15 @@ class WindowsController:
         control_type, identity = self._dictation_focus()
         return control_type + ":" + identity
 
-    def dictation_insert(self, text: str, expected: str) -> None:
-        """Write literal Unicode at the caret without interpreting hotkey syntax."""
+    def dictation_insert(self, text: str, expected: str,
+                         *, extra_guard: Callable[[], None] | None = None) -> None:
+        """Literal Unicode typing; optional per-unit guard for scratch tests.
+
+        The optional guard must be a caller-controlled, side-effect-free
+        target check and is invoked before each UTF-16 unit. It cannot make
+        desktop focus changes atomic, so only harmless scratch input is
+        suitable for this path.
+        """
         from .dictation import DictationError, MAX_CHARS
         if (not isinstance(text, str) or not 0 < len(text) <= MAX_CHARS or
                 any(ord(c) < 32 and c != "\n" for c in text)):
@@ -391,7 +399,15 @@ class WindowsController:
         # a newline in a UIA Document (rich editor), never a generic Edit field.
         if "\n" in text and not expected.startswith("Document:"):
             raise DictationError("この入力欄では改行の安全性を確認できません。文章入力を続ける前に入力先を確認してください")
-        _send_literal_unicode(text, on_chunk=lambda: self._dictation_check(expected))
+        def verified_target():
+            self._dictation_check(expected)
+            if extra_guard is not None:
+                extra_guard()
+        # A manually authorized scratch-only diagnostic rechecks process,
+        # HWND, document title and focused control for each UTF-16 unit.
+        # All normal dictation retains the previous batching performance.
+        _send_literal_unicode(text, on_chunk=verified_target,
+                              chunk_units=1 if extra_guard is not None else 64)
 
     def _dictation_check(self, expected: str) -> None:
         if self.dictation_probe() != expected:
@@ -902,7 +918,9 @@ def rename_file(path: str, new_name: str) -> str:
 
 # A dedicated literal-text path: pywinauto.send_keys uses ^/+/%%/{...} as
 # shortcuts. Dictation must never interpret words like ^s or {ENTER} as keys.
-def _send_literal_unicode(text: str, on_chunk=None) -> None:
+def _send_literal_unicode(text: str, on_chunk=None, *, chunk_units: int = 64) -> None:
+    if type(chunk_units) is not int or not 1 <= chunk_units <= 64:
+        raise ValueError("入力の検証間隔が不正です")
     if os.name != "nt":
         raise RuntimeError("Windows専用の入力機能です")
     user32 = ctypes.windll.user32
@@ -936,10 +954,10 @@ def _send_literal_unicode(text: str, on_chunk=None) -> None:
     encoded = text.encode("utf-16-le")
     units = [int.from_bytes(encoded[i:i+2], "little")
              for i in range(0, len(encoded), 2)]
-    for offset in range(0, len(units), 64):
+    for offset in range(0, len(units), chunk_units):
         if on_chunk is not None:
             on_chunk()
-        chunk = units[offset:offset + 64]
+        chunk = units[offset:offset + chunk_units]
         events = []
         for code in chunk:
             # VK_RETURN only for explicitly allowed Document editors.
