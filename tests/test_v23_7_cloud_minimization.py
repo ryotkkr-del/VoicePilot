@@ -64,12 +64,16 @@ class CompactCloudMinimizationTests(unittest.TestCase):
         self.assertIn("tabs", result["browser"])
         self.assertIn("windows", result["windows"])
 
-    def test_explicit_tab_and_window_switch_can_use_current_names(self):
+    def test_explicit_switch_does_not_disclose_unrelated_background_titles(self):
         browser = compact_for_model(observation(), "別のタブへ切り替えて", cloud=True)
-        self.assertIn("tabs", browser["browser"])
+        self.assertNotIn("tabs", browser["browser"])
+        self.assertEqual(browser["browser"]["title"], "Current public page")
+        self.assertNotIn(SECRET, str(browser))
         self.assertNotIn("recent_instructions", browser)
         windows = compact_for_model(observation(), "ウィンドウを切り替えて", cloud=True)
-        self.assertIn("windows", windows["windows"])
+        self.assertNotIn("windows", windows["windows"])
+        self.assertEqual(windows["windows"]["active_title"], "Public Browser")
+        self.assertNotIn(SECRET, str(windows))
         self.assertNotIn("recent_files", windows)
 
     def test_cloud_agent_passes_only_filtered_context_to_planner(self):
