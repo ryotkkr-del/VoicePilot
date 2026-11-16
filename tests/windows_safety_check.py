@@ -236,8 +236,15 @@ def assert_scratch_notepad_target(controller, target: ScratchNotepadTarget) -> N
 
 def pin_scratch_notepad_target(controller, token: str) -> ScratchNotepadTarget:
     """Capture a target only after manual focus of the new dummy document."""
-    candidate = ScratchNotepadTarget(controller.foreground_hwnd(),
-                                     token, controller.dictation_probe())
+    hwnd = controller.foreground_hwnd()
+    if (type(hwnd) is not int or hwnd <= 0 or
+            controller._foreground_process_name() != "notepad.exe" or
+            not isinstance(token, str) or not token.startswith("VoicePilot_Test_") or
+            token.casefold() not in controller.active_window_title().casefold()):
+        raise PermissionError("テスト用メモ帳が前面であることを確認できません")
+    # Do not even query the caret of another application before confirming
+    # the real process and the scratch document's one-time title token.
+    candidate = ScratchNotepadTarget(hwnd, token, controller.dictation_probe())
     assert_scratch_notepad_target(controller, candidate)
     return candidate
 
