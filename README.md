@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.19: normal desktop GUI now starts locked by default
+
+A new **volatile, five-minute, opt-in desktop authorization** now protects the regular VoicePilot GUI. On every launch it starts locked. Only an explicit click on the local GUI's permission button followed by confirmation permits the normal voice/text/agent/Chrome/dictation operations; neither config files, models, browser content nor voice can arm it. Stop (including keyboard and hands-free cancellation), closing or expiry revokes authorization. The shared fast/reference/AI dispatch boundary rechecks the permit before each effect, and direct dictation/handoff paths are separately guarded.
+
+The regular GUI also declines to perform a background release check unless a revision-3 immutable bootstrap contains a developer key; the unsigned legacy bootstrap's pre-launch behavior is **not** magically corrected.
+
+**Still not production-safe:** in-flight native side effects cannot be rolled back, the real Windows device is untested, and the public GitHub ZIP remains independently unsigned. Read [docs/DEFAULT_LOCKED_CONTROL.md](docs/DEFAULT_LOCKED_CONTROL.md) before trying. The separate `try_voicepilot.bat` microphone-only trial remains the recommended first test.
+
 ## v0.23.18: P0-2 opt-in scratch Notepad Escape stop and input deadline
 
 The manually authorized **scratch-only Notepad diagnostic** now checks the physical Escape key before every UTF-16 input unit. Holding Escape cancels remaining simulated input; it also stops after 20 seconds or if key-state inspection fails. It retains the v0.23.17 pinned HWND / actual process / unique scratch document / focused editor checks. It does not install system-wide keyboard hooks, elevate privileges, or modify normal dictation behavior.
