@@ -170,10 +170,11 @@ class VoicePilotApp:
                 on_error=self.log,
             )
         self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
-        if bootstrap_security_revision() < 2:
-            self.log("注意：更新基盤が旧版です。更新ZIPの新しい安全検証は未適用です。正式運用・重要データでの使用は避けてください。")
-        if not bootstrap_signing_key_configured():
-            self.log("注意：開発者署名の信頼鍵は未設定です。自動更新はGitHubハッシュのみの検査で、独立した真正性は保証できません。")
+        revision = bootstrap_security_revision()
+        if revision < 3:
+            self.log("注意：旧bootstrapは署名付き更新を検証しません。アプリだけ更新しても安全な更新基盤には切り替わりません。")
+        elif not bootstrap_signing_key_configured():
+            self.log("安全停止：新bootstrapに信頼済み開発者公開鍵が未設定です。自動更新は拒否されます。")
 
     def button(self, parent, text, command, primary=False):
         return tk.Button(parent, text=text, command=command,
