@@ -5,6 +5,7 @@ microphone, network, credentials or self-modification is involved.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -16,6 +17,8 @@ from unittest.mock import patch
 import zipfile
 
 import voicepilot_bootstrap as updater
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 def archive(version="0.23.9"):
@@ -51,6 +54,14 @@ class RecoveryTests(unittest.TestCase):
         (self.root / "voicepilot_bootstrap.py").write_text("stable bootstrap", encoding="utf-8")
         self.keep = self.root / "local_user_settings.json"
         self.keep.write_text('{"private":"not part of release"}', encoding="utf-8")
+        self.signing_key = Ed25519PrivateKey.generate()
+        public = self.signing_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+        )
+        trusted = patch.object(updater, "PINNED_SIGNER_PUBLIC_KEY_B64",
+                               base64.b64encode(public).decode("ascii"))
+        trusted.start()
+        self.addCleanup(trusted.stop)
 
     def stage(self):
         payload = archive()
@@ -64,6 +75,12 @@ class RecoveryTests(unittest.TestCase):
                     "https://github.com/ryotkkr-del/VoicePilot/"
                     "releases/download/v0.23.9/VoicePilot-v0.23.9.zip"
                 ),
+            }, {
+                "name": "VoicePilot-v0.23.9.zip.sig", "state": "uploaded",
+                "browser_download_url": (
+                    "https://github.com/ryotkkr-del/VoicePilot/"
+                    "releases/download/v0.23.9/VoicePilot-v0.23.9.zip.sig"
+                ),
             }],
         }
         result = updater.check_and_stage(
@@ -72,6 +89,9 @@ class RecoveryTests(unittest.TestCase):
             download=lambda _url, destination: (
                 destination.write_bytes(payload), sha
             )[1],
+            download_signature=lambda _url: base64.b64encode(
+                self.signing_key.sign(updater._signed_payload("v0.23.9", sha))
+            ).decode("ascii"),
         )
         self.assertEqual(result, "downloaded")
 
