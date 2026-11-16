@@ -177,7 +177,7 @@ class AppIntegrationTests(unittest.TestCase):
             outcome = VoicePilotApp._run_agent(app,'今の画面を説明して',runtime)
         self.assertEqual(outcome.status,'answered')
         agent_run.assert_not_called()
-        app.log.assert_called_with('画面の説明：画面の説明です')
+        app.log.assert_called_with('画面の説明を生成しました（本文は操作ログに残しません）')
 
     def test_completed_answer_has_distinct_ui_state_and_voice_feedback(self):
         self.assertEqual(presentation('answered').title,'画面を説明しました')
