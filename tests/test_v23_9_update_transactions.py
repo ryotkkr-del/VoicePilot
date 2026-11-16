@@ -5,6 +5,7 @@ microphone, network, credentials or self-modification is involved.
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -16,6 +17,7 @@ from unittest.mock import patch
 import zipfile
 
 import voicepilot_bootstrap as updater
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 def archive(version="0.23.9"):
@@ -51,6 +53,11 @@ class RecoveryTests(unittest.TestCase):
         (self.root / "voicepilot_bootstrap.py").write_text("stable bootstrap", encoding="utf-8")
         self.keep = self.root / "local_user_settings.json"
         self.keep.write_text('{"private":"not part of release"}', encoding="utf-8")
+        self.signer = Ed25519PrivateKey.generate()  # ephemeral, not a developer key
+        public = self.signer.public_key().public_bytes_raw().hex()
+        pin = patch.object(updater, "PINNED_ED25519_PUBLIC_KEY_HEX", public)
+        pin.start()
+        self.addCleanup(pin.stop)
 
     def stage(self):
         payload = archive()
@@ -64,6 +71,12 @@ class RecoveryTests(unittest.TestCase):
                     "https://github.com/ryotkkr-del/VoicePilot/"
                     "releases/download/v0.23.9/VoicePilot-v0.23.9.zip"
                 ),
+            }, {
+                "name": "VoicePilot-v0.23.9.sig.json", "state": "uploaded",
+                "browser_download_url": (
+                    "https://github.com/ryotkkr-del/VoicePilot/"
+                    "releases/download/v0.23.9/VoicePilot-v0.23.9.sig.json"
+                ),
             }],
         }
         result = updater.check_and_stage(
@@ -72,6 +85,13 @@ class RecoveryTests(unittest.TestCase):
             download=lambda _url, destination: (
                 destination.write_bytes(payload), sha
             )[1],
+            fetch_signature=lambda _: {
+                "schema": 1, "repository": updater.REPO,
+                "version": "0.23.9", "sha256": sha,
+                "signature": base64.b64encode(
+                    self.signer.sign(updater._signing_message("0.23.9", sha))
+                ).decode("ascii"),
+            },
         )
         self.assertEqual(result, "downloaded")
 
