@@ -165,6 +165,60 @@ class SignedReleaseTests(unittest.TestCase):
         self.assertEqual(self.stage(), "downloaded")
         self.assertEqual(updater.apply_pending(self.root, self.cache), "applied")
 
+    def test_tampered_staged_files_and_pending_hashes_cannot_bypass_signature(self):
+        self.stage()
+        import json
+        pending_path = self.cache / "pending.json"
+        metadata = json.loads(pending_path.read_text(encoding="utf-8"))
+        staged = self.cache / metadata["stage"] / "app/main.py"
+        staged.write_text("attacker modified code", encoding="utf-8")
+        metadata["files"]["app/main.py"] = hashlib.sha256(staged.read_bytes()).hexdigest()
+        pending_path.write_text(json.dumps(metadata), encoding="utf-8")
+        with self.assertRaisesRegex(updater.UpdateError, "署名済みZIPと一致"):
+            updater.apply_pending(self.root, self.cache)
+        self.assert_old()
+
+    def test_missing_or_tampered_signed_archive_rejected(self):
+        for modification in ("missing", "tampered"):
+            with self.subTest(modification=modification):
+                self.stage()
+                import json
+                info = json.loads((self.cache / "pending.json").read_text(encoding="utf-8"))
+                archived = self.cache / info["stage"] / updater._SIGNED_ARCHIVE_NAME
+                if modification == "missing":
+                    archived.unlink()
+                else:
+                    archived.write_bytes(b"forged, unsigned replacement")
+                with self.assertRaises(updater.UpdateError):
+                    updater.apply_pending(self.root, self.cache)
+                self.assert_old()
+
+    def test_unsigned_cache_metadata_without_archive_is_not_installable(self):
+        self.stage()
+        import json
+        info = json.loads((self.cache / "pending.json").read_text(encoding="utf-8"))
+        archived = self.cache / info["stage"] / updater._SIGNED_ARCHIVE_NAME
+        archived.unlink()
+        with self.assertRaises(updater.UpdateError):
+            updater.apply_pending(self.root, self.cache)
+        self.assert_old()
+
+    def test_offline_signer_refuses_invalid_archive(self):
+        base = Path(self.tmp.name)
+        invalid_archive = base / f"VoicePilot-v{VERSION}.zip"
+        with zipfile.ZipFile(invalid_archive, "w") as archive:
+            archive.writestr("VERSION", VERSION)
+            archive.writestr("app/main.py", "missing everything else")
+        key_file = base / "offline-private.pem"
+        key_file.write_bytes(self.key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.PKCS8,
+            encryption_algorithm=serialization.BestAvailableEncryption(b"test-password-123"),
+        ))
+        with self.assertRaises(updater.UpdateError):
+            sign_archive(invalid_archive, key_file, b"test-password-123")
+        self.assertFalse((base / (invalid_archive.name + ".sig")).exists())
+
     def test_offline_signer_works_with_encrypted_key_outside_repo(self):
         base = Path(self.tmp.name)
         archive = base / f"VoicePilot-v{VERSION}.zip"
