@@ -94,7 +94,7 @@ class TrialModeTests(unittest.TestCase):
         view.generation = 1
         view.started = 0.0
         view.recognizer = None
-        view.worker_results = queue.Queue(maxsize=1)
+        view.worker_results = queue.SimpleQueue()
         view.allow_download = Mock()
         view.allow_download.get.return_value = False
         view.platform_safe = True
