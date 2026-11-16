@@ -155,7 +155,7 @@ class OwnerSigningTests(unittest.TestCase):
     def test_source_zip_version_name_must_match(self):
         other = self.repo / "dist" / "renamed.zip"
         other.write_bytes(self.source.read_bytes())
-        with self.assertRaisesRegex(owner_release.OfflineSignerError, "名前"):
+        with self.assertRaisesRegex(owner_release.OfflineSignerError, "ファイル名"):
             self.build(source=other)
 
     def test_key_placed_in_repository_is_refused(self):
