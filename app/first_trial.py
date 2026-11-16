@@ -59,9 +59,10 @@ class LocalTrial:
         self.generation = 0
         self.started = 0.0
         self.recognizer = None
-        # The worker MUST NOT call Tk, even via root.after(): Tk callbacks
-        # are scheduled only from the main UI thread.
-        self.worker_results = queue.Queue(maxsize=1)
+        # The worker MUST NOT call Tk, even via root.after(). A SimpleQueue
+        # cannot deadlock a finished worker if the UI briefly stops polling;
+        # the GUI's busy guard still permits one inference at a time.
+        self.worker_results = queue.SimpleQueue()
         self.allow_download = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="マイクは停止しています")
         self.preview_state = tk.StringVar(value="指示候補：未確認（PC操作なし）")
@@ -141,6 +142,13 @@ class LocalTrial:
             if self.working:
                 self.root.after(120, self._poll_worker)
             return
+        # A stalled UI may have several completions waiting. Draining avoids
+        # displaying an older transcript after a newer canceled generation.
+        while True:
+            try:
+                generation, text, status = self.worker_results.get_nowait()
+            except queue.Empty:
+                break
         self.working = False
         if generation == self.generation:
             self._set_output(text)
