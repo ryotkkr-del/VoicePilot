@@ -137,7 +137,7 @@ def _signing_message(version: str, digest: str) -> bytes:
     body = {"schema": _SIGNED_SCHEMA, "repository": REPO,
             "version": version, "sha256": digest}
     canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-    return b"VoicePilot independent release signature v1\\n" + canonical.encode("ascii")
+    return b"VoicePilot independent release signature v1\n" + canonical.encode("ascii")
 
 
 def _verify_signed_release(envelope: dict, version: str, digest: str) -> None:
@@ -516,6 +516,8 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
         signed_archive = stage / _SIGNED_ARCHIVE_NAME
         if signed_archive.is_symlink() or not signed_archive.is_file():
             raise UpdateError("署名付きの更新ZIPが見つかりません")
+        if signed_archive.stat().st_size > MAX_ARCHIVE_BYTES:
+            raise UpdateError("署名付きZIPがサイズ上限を超えています")
         if hashlib.sha256(signed_archive.read_bytes()).hexdigest() != digest:
             raise UpdateError("署名済みZIPのハッシュが一致しません")
         with tempfile.TemporaryDirectory(prefix="signed-check-", dir=cache) as folder:
