@@ -7,4 +7,4 @@ Pillow>=10,<13
 # Lightweight built-in Windows SAPI speech feedback uses pywin32.
 pywin32>=306,<400; sys_platform == "win32"
 # Optional bootstrap Ed25519 signature verification when a developer key is pinned.
-cryptography>=43,<49
+cryptography>=50.0.2,<51
