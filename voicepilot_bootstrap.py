@@ -111,7 +111,7 @@ def _signed_payload(tag: str, digest: str) -> bytes:
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
         raise UpdateError("署名対象のSHA-256が不正です")
     asset = f"VoicePilot-{tag}.zip"
-    return (f"VoicePilot signed release v1\\n{REPO}\\n{tag}\\n{asset}\\n{digest}\\n").encode("ascii")
+    return (f"VoicePilot signed release v1\n{REPO}\n{tag}\n{asset}\n{digest}\n").encode("ascii")
 
 
 def _verify_signed_release(tag: str, digest: str, signature_b64: str) -> str:
