@@ -13,7 +13,6 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import messagebox
 
 TRIAL_RECORD_MAX_SECONDS = 8.0
 TRIAL_MODEL = "small"
@@ -117,10 +116,10 @@ class LocalTrial:
     def start(self) -> None:
         if self.closed or not self.platform_safe or self.working or self.recording:
             return
-        # Explicitly import mic and the model only after the user clicks.
-        from .audio import Microphone
-        trial_mic = Microphone()
+        # Explicitly import mic only after the user clicks.
         try:
+            from .audio import Microphone
+            trial_mic = Microphone()
             trial_mic.start()
         except Exception:
             self._status("マイクを起動できません。接続とWindowsのマイク許可を確認してください")
@@ -167,12 +166,11 @@ class LocalTrial:
                              args=(samples, generation, allow_network),
                              daemon=True).start()
         elif self.working:
-            # Do not pretend a running native ASR inference is forcibly killed;
-            # instead hide its result and make a new user action necessary.
+            # Native ASR cannot be interrupted safely. Invalidate its result
+            # but keep the busy guard until its worker really exits so a
+            # second recognition cannot run concurrently on the same model.
             self.generation += 1
-            self.working = False
-            self._status("認識結果を破棄しました（実行中の計算は終了を待ちます）")
-            self.record_btn.configure(state="normal")
+            self._status("結果を破棄しました。計算が終了するまで録音を開始できません")
             self.stop_btn.configure(state="disabled")
 
     def _transcribe(self, samples, generation: int, allow_network: bool) -> None:
@@ -184,8 +182,8 @@ class LocalTrial:
                 self.recognizer = SpeechRecognizer(
                     TRIAL_MODEL, local_files_only=not allow_network
                 )
-            elif not allow_network:
-                self.recognizer.local_files_only = True
+            else:
+                self.recognizer.local_files_only = not allow_network
             text = self.recognizer.transcribe(samples)
             status = "ローカル音声認識が完了しました" if text else "認識できる音声がありませんでした"
         except Exception:
@@ -196,11 +194,14 @@ class LocalTrial:
         finally:
             del samples
         def finish():
-            if self.closed or generation != self.generation:
+            if self.closed:
                 return
             self.working = False
-            self._set_output(text)
-            self._status(status)
+            if generation == self.generation:
+                self._set_output(text)
+                self._status(status)
+            # A canceled generation must not expose its transcript, but
+            # completing its worker allows another deliberate recording.
             self.record_btn.configure(state="normal")
             self.stop_btn.configure(state="disabled")
         try:
