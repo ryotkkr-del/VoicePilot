@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.10: fail-closed Ed25519 signed-update verifier (P0-4, not activated)
+
+The **new** immutable bootstrap now requires a detached Ed25519 signature (`.zip.sig`) verifiable against a developer public key pinned into the bootstrap itself. The signed, canonical message binds the repository, release tag, ZIP filename and SHA-256. Both staging and applying staged updates refuse invalid or absent signatures. There is no insecure fallback to GitHub's asset SHA-256. Regression tests generate ephemeral keys to test correct, forged, missing, replayed, tampered and unsigned-legacy-pending cases; no production secret keys are stored.
+
+**This is not a production signed release.** The developer has not yet provided and independently verified a real public key, so `PINNED_SIGNER_PUBLIC_KEY_B64` remains deliberately blank and new bootstrap installations **refuse automatic updates** until a trusted key is manually pinned. The offline `scripts/sign_release.py` signs using a private Ed25519 PEM kept outside this repository; CI never receives a developer signing key and currently publishes **unsigned prototype ZIP assets**.
+
+Existing installations retain their old immutable bootstrap through normal automatic updates, and do **not** gain these checks just by updating the app. See [docs/SECURE_UPDATE_MIGRATION.md](docs/SECURE_UPDATE_MIGRATION.md) for the manual, out-of-band migration requirements. Real-device tests, independent key enrollment and official signed publication remain unresolved.
+
 ## v0.23.9: P0-4 recoverable updater transaction and legacy bootstrap warning
 
 Hardens the **standalone** updater: validate every backup before a rollback, checksum new backup copies, recheck each staged file immediately before replacing installed code, and retain the recovery journal until the new rollback metadata is durably written. Disk-write failure and crash-recovery tests use temporary directories, including tampered/missing backups, changed staged code, and failures during commit metadata creation. Previously created legacy recovery journals remain readable (without new per-file hashes).
