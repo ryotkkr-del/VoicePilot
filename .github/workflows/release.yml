@@ -1,4 +1,4 @@
-name: Test and publish stable VoicePilot releases
+name: Validate VoicePilot release candidates
 
 on:
   push:
@@ -7,15 +7,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# PR test code (including dependencies) never receives a release-write token.
-# Only the separate publish job can create a GitHub Release.
+# This workflow deliberately has no release-write permission. A CI build is an
+# unsigned candidate, not a distributable release: the owner signs it offline
+# and publishes the ZIP plus its detached signature only after independent
+# fingerprint verification and hardware acceptance.
 permissions:
   contents: read
 
 # Keep production publishing serialized, but let a corrected PR cancel its
 # own obsolete CI instead of waiting behind a hung test from that PR.
 concurrency:
-  group: voicepilot-release-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
+  group: voicepilot-release-candidate-${{ github.event_name == 'pull_request' && github.head_ref || 'main' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -41,46 +43,11 @@ jobs:
           Get-ChildItem tests_js/*.test.js | ForEach-Object { node $_.FullName; if ($LASTEXITCODE -ne 0) { exit 1 } }
       - name: Build release archive and check extension version
         run: python scripts/build_release.py
-      - name: Transfer checked archive to publisher
+      - name: Retain unsigned release candidate for offline signing
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
-          name: verified-voicepilot-archive
+          name: unsigned-voicepilot-release-candidate
           path: dist/VoicePilot-v*.zip
           if-no-files-found: error
-          retention-days: 1
-
-  publish:
-    # Never execute PR code or its tests using a contents:write token.
-    needs: test-and-build
-    if: github.event_name != 'pull_request'
-    runs-on: windows-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: verified-voicepilot-archive
-          path: dist
-      - name: Publish only the current main commit
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $mainHead = gh api "repos/$env:GITHUB_REPOSITORY/branches/main" --jq ".commit.sha"
-          if ($LASTEXITCODE -ne 0 -or -not $mainHead) { throw "Could not verify latest main commit" }
-          if ($mainHead.Trim() -ne $env:GITHUB_SHA) {
-            Write-Host "Commit is no longer main HEAD. Skipping stale release."
-            exit 0
-          }
-          $version = (Get-Content VERSION -Raw).Trim()
-          $tag = "v$version"
-          $archive = "dist/VoicePilot-$tag.zip"
-          if (-not (Test-Path $archive)) { throw "Verified archive is missing: $archive" }
-          $releases = gh release list --repo $env:GITHUB_REPOSITORY --limit 100 --json tagName | ConvertFrom-Json
-          if ($releases | Where-Object { $_.tagName -eq $tag }) {
-            Write-Host "Release $tag already exists; unchanged versions never replace an asset."
-            exit 0
-          }
-          gh release create $tag $archive --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title "VoicePilot $tag" --notes "UNSIGNED PROTOTYPE RELEASE. No authenticated developer Ed25519 signing key or signature asset has been provisioned. New revision-3 bootstrap refuses unsigned automatic updates; older installations still retain unsigned legacy bootstrap and must migrate manually after independent key verification. Windows CI passed but the user\'s real PC has not been tested."
+          retention-days: 14
