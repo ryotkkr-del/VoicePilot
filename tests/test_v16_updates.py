@@ -1,11 +1,16 @@
 """Updater tests run offline and do not require Windows or a GitHub account."""
+import base64
 import hashlib
 import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+import voicepilot_bootstrap as updater
 
 from voicepilot_bootstrap import (
     UpdateError, apply_pending, check_and_stage, extract_checked,
@@ -46,17 +51,37 @@ class UpdaterTests(unittest.TestCase):
         (self.root / "app/main.py").write_text("old main")
         (self.root / "voicepilot_bootstrap.py").write_text("old stable bootstrap")
         (self.root / "requirements.txt").write_text("old deps")
+        self.signer = Ed25519PrivateKey.generate()  # ephemeral key, tests only
+        public = self.signer.public_key().public_bytes_raw().hex()
+        pin = patch.object(updater, "PINNED_ED25519_PUBLIC_KEY_HEX", public)
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    def signed_envelope(self, version, digest):
+        return {
+            "schema": 1, "repository": updater.REPO,
+            "version": version, "sha256": digest,
+            "signature": base64.b64encode(
+                self.signer.sign(updater._signing_message(version, digest))
+            ).decode("ascii"),
+        }
 
     def release(self, payload, version="0.17.0", sha=None):
         digest = sha or hashlib.sha256(payload).hexdigest()
+        url = f"https://github.com/ryotkkr-del/VoicePilot/releases/download/v{version}/VoicePilot-v{version}.zip"
         return {"tag_name": "v" + version, "draft": False, "prerelease": False,
-                "assets": [{"name": f"VoicePilot-v{version}.zip", "state": "uploaded",
-                            "digest": "sha256:" + digest,
-                            "browser_download_url": f"https://github.com/ryotkkr-del/VoicePilot/releases/download/v{version}/VoicePilot-v{version}.zip"}]}
+                "assets": [
+                    {"name": f"VoicePilot-v{version}.zip", "state": "uploaded",
+                     "digest": "sha256:" + digest, "browser_download_url": url},
+                    {"name": f"VoicePilot-v{version}.sig.json", "state": "uploaded",
+                     "browser_download_url": f"https://github.com/ryotkkr-del/VoicePilot/releases/download/v{version}/VoicePilot-v{version}.sig.json"},
+                ]}
 
     def check(self, payload, version="0.17.0", sha=None):
+        digest = sha or hashlib.sha256(payload).hexdigest()
         return check_and_stage(self.root, self.cache, force=True,
             fetch_release=lambda _: self.release(payload, version, sha),
+            fetch_signature=lambda _: self.signed_envelope(version, digest),
             download=lambda _url, output: (output.write_bytes(payload), hashlib.sha256(payload).hexdigest())[1])
 
     def test_semver(self):
