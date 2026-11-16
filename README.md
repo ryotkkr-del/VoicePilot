@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.17: P0-1/P0-5 scratch Notepad focus pinning
+
+The explicit opt-in `tests/windows_safety_check.py --interactive-notepad` test now pins the **real notepad.exe process, foreground HWND, unique disposable document token, and UIA caret identity**. It rechecks the same target **before every UTF-16 input unit**, rejecting any switch to another document, window or process. The characters are harmless literal test text, not hotkeys; no save is performed. The optional stricter callback leaves ordinary VoicePilot dictation batching unchanged.
+
+This improves the **test harness**, not proof of zero race risk or permission to automate personal files. The test launches only with typed `YES` approval and requires the user to inspect the result; `MANUAL` is never an automatic production PASS. Actual Windows hardware acceptance and authentic developer-signed updates remain outstanding. See [docs/P0_HARDWARE_ACCEPTANCE.md](docs/P0_HARDWARE_ACCEPTANCE.md).
+
 ## v0.23.16: preview deterministic voice commands without executing them
 
 The opt-in `try_voicepilot.bat` first-run microphone UI now displays a **read-only candidate action preview** for a small, exact set of existing deterministic local commands (e.g. launch Notepad, scroll, navigate back). Unknown phrases stay unknown; this is not full AI planning, foreground verification, approval or a live execution test. Search terms and other user arguments are never echoed into preview labels; microphone transcripts are still displayed separately in the local GUI and are not saved.
