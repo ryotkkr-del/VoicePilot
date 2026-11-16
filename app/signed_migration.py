@@ -16,20 +16,34 @@ import hashlib
 import hmac
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
+import stat
 import sys
 import tempfile
+import unicodedata
 import zipfile
 from dataclasses import dataclass
 
-from voicepilot_bootstrap import (
-    MAX_ARCHIVE_BYTES, REPO, UpdateError, _SIGNED_KEYS,
-    _signing_message, extract_checked, version_tuple,
-)
-
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+# Keep this verifier self-contained: legacy bootstraps predate Ed25519 and
+# must not be imported/executed just to inspect a signed migration package.
+REPO = "ryotkkr-del/VoicePilot"
+MAX_ARCHIVE_BYTES = 16 * 1024 * 1024
+MAX_UNPACKED_BYTES = 64 * 1024 * 1024
+MAX_FILES = 400
+_SIGNED_KEYS = frozenset({"schema", "repository", "version", "sha256", "signature"})
+_REQUIRED = frozenset({
+    "VERSION", "voicepilot_bootstrap.py", "setup_and_run.bat", "app/main.py",
+    "app/__init__.py", "chrome-extension/manifest.json", "requirements.txt",
+})
+_ALLOWED_FILES = frozenset({
+    "VERSION", "requirements.txt", "README.md", "README_JA.md",
+    "run_tests.bat", "voicepilot_bootstrap.py", "setup_and_run.bat",
+    "rollback_update.bat",
+})
+_ALLOWED_DIRS = ("app/", "chrome-extension/", "tests/", "tests_js/")
 _HEX_KEY = re.compile(r"[0-9a-f]{64}\Z")
 _VERSIONED_ZIP = re.compile(r"VoicePilot-v(\d+\.\d+\.\d+)\.zip\Z")
 _NEW_DIRECTORY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,75}\Z")
@@ -45,6 +59,73 @@ class VerifiedBundle:
     version: str
     zip_digest: str
     public_key_fingerprint: str
+
+
+def _canonical_message(version: str, digest: str) -> bytes:
+    if not re.fullmatch(r"(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)", version):
+        raise MigrationError("署名対象バージョンが不正です")
+    if _HEX_KEY.fullmatch(digest) is None:
+        raise MigrationError("署名対象ハッシュが不正です")
+    body = {"schema": 1, "repository": REPO, "version": version, "sha256": digest}
+    return (b"VoicePilot independent release signature v1\\n" +
+            json.dumps(body, sort_keys=True, separators=(",", ":"),
+                       ensure_ascii=True).encode("ascii"))
+
+
+def _validated_name(name: str) -> str:
+    if not name or "\\\\" in name or "\\x00" in name or name.startswith("/"):
+        raise MigrationError("ZIPに不正なパスがあります")
+    path = PurePosixPath(name)
+    if (path.as_posix() != name or
+            any(part in {"", ".", ".."} for part in name.split("/")) or
+            len(path.parts) > 8):
+        raise MigrationError("ZIPのパスが安全ではありません")
+    for part in path.parts:
+        if (part.startswith(".") or part.endswith((" ", ".")) or
+                any(ord(ch) < 32 or ch in '<>:"|?*' for ch in part) or
+                re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?", part)):
+            raise MigrationError("ZIPのWindows予約パスを拒否しました")
+    if not (name in _ALLOWED_FILES or name.startswith(_ALLOWED_DIRS)):
+        raise MigrationError("ZIPに許可外のファイルがあります")
+    if not (name == "VERSION" or name.endswith((".py", ".js", ".json", ".html", ".md", ".txt", ".bat"))):
+        raise MigrationError("ZIPの拡張子が不正です")
+    return name
+
+
+def _extract_signed_archive(archive: Path, destination: Path, version: str) -> None:
+    """Reject dangerous ZIP metadata before any source file is unpacked."""
+    seen: set[str] = set()
+    names: list[str] = []
+    with zipfile.ZipFile(archive) as zf:
+        infos = zf.infolist()
+        if len(infos) > MAX_FILES:
+            raise MigrationError("ZIPのファイル数が上限を超えています")
+        total = 0
+        for entry in infos:
+            mode = entry.external_attr >> 16
+            if stat.S_ISLNK(mode) or entry.flag_bits & 1:
+                raise MigrationError("ZIPのリンク・暗号化エントリを拒否しました")
+            if entry.is_dir():
+                continue
+            name = _validated_name(entry.filename)
+            folded = unicodedata.normalize("NFC", name).casefold()
+            if folded in seen:
+                raise MigrationError("ZIPのファイル名が重複しています")
+            seen.add(folded)
+            names.append(name)
+            total += entry.file_size
+            if total > MAX_UNPACKED_BYTES:
+                raise MigrationError("ZIPの展開サイズが上限を超えています")
+        if not _REQUIRED.issubset(names):
+            raise MigrationError("ZIPの必須ファイルが不足しています")
+        destination.mkdir()
+        for name in sorted(names):
+            target = destination / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with zf.open(name) as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst, length=64 * 1024)
+    if (destination / "VERSION").read_text(encoding="utf-8").strip() != version:
+        raise MigrationError("署名済みZIPのVERSIONが一致しません")
 
 
 def _read_exact_manifest(path: Path) -> dict:
@@ -103,7 +184,7 @@ def _verify_archive_copy(local_zip: Path, signature: Path, key_hex: str,
     if match is None:
         raise MigrationError("ZIPの名前が正規のリリース形式ではありません")
     version = match.group(1)
-    version_tuple(version)
+    _canonical_message(version, "0" * 64)
     if local_zip.stat().st_size > MAX_ARCHIVE_BYTES:
         raise MigrationError("ZIPがサイズ上限を超えています")
 
@@ -130,15 +211,15 @@ def _verify_archive_copy(local_zip: Path, signature: Path, key_hex: str,
                 base64.b64encode(raw_signature).decode("ascii") != signature_text):
             raise ValueError("not canonical Base64 Ed25519")
         Ed25519PublicKey.from_public_bytes(public_bytes).verify(
-            raw_signature, _signing_message(version, digest)
+            raw_signature, _canonical_message(version, digest)
         )
     except (ValueError, binascii.Error, InvalidSignature) as exc:
         raise MigrationError("開発者の独立署名を検証できません。移行を拒否します") from exc
 
     extracted.mkdir()
     try:
-        extract_checked(local_zip, extracted, version)
-    except (UpdateError, OSError, ValueError, zipfile.BadZipFile) as exc:
+        _extract_signed_archive(local_zip, extracted, version)
+    except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
         raise MigrationError("署名済みZIPの内容が安全な配布形式ではありません") from exc
 
     bootstrap = extracted / "voicepilot_bootstrap.py"
