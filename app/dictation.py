@@ -70,6 +70,8 @@ class DictationController:
             if checkpoint is not None:
                 checkpoint()
             result = self.bridge.call("dictation_probe", {}, timeout=8)
+            if checkpoint is not None:
+                checkpoint()
             if not isinstance(result, dict) or not isinstance(result.get("token"), str) or not isinstance(result.get("tab_id"), int):
                 raise DictationError("Chromeの文字入力欄を確認できませんでした")
             return DictationTarget("browser", hwnd, result["token"], result["tab_id"])
@@ -77,6 +79,8 @@ class DictationController:
         if checkpoint is not None:
             checkpoint()
         result = self.windows.dictation_probe()
+        if checkpoint is not None:
+            checkpoint()
         if not isinstance(result, str) or not result:
             raise DictationError("選択された入力欄を確認できませんでした")
         return DictationTarget("windows", hwnd, result)
