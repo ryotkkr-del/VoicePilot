@@ -245,6 +245,9 @@ class LongTaskTests(unittest.TestCase):
 class OptInTests(unittest.TestCase):
     def test_no_start_without_confirmation(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
         app.busy, app.recording, app.dictation_target = False, False, None
         app.command, app.root = Mock(), Mock()
         app.mini = None
