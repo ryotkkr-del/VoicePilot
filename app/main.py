@@ -706,6 +706,8 @@ class VoicePilotApp:
         if self.busy or self.recording or self._closing:
             self.log("処理が終了してからハンズフリーを開始してください")
             return
+        if self._control_locked():
+            return
         self.handsfree.start()
         self.stop_event.clear()
         self.log("ハンズフリー開始。作業中は「待って」「続けて」「やめて」で制御できます")
@@ -783,6 +785,8 @@ class VoicePilotApp:
     def toggle_record(self):
         if self.recording:
             self._stop_record()
+            return
+        if not self.busy and self._control_locked():
             return
         if self.busy:
             if self._record_after_cancel:
@@ -982,6 +986,8 @@ class VoicePilotApp:
             self.log("文章入力モードを終了しました")
             self._apply_phase()
             return
+        if self._control_locked():
+            return
         self.busy = True
         self.stop_event.clear()
         self.set_phase("acting")
@@ -1015,6 +1021,11 @@ class VoicePilotApp:
                 self.dictation_target = None
                 self.log("文章入力モードを終了しました")
                 return RunOutcome("completed", "文章入力モードを終了しました")
+            # This path bypasses VoiceAgent; enforce the same authorization
+            # before capture or text insertion, even for a stale voice worker.
+            if not self.control_permit.allowed():
+                self.dictation_target = None
+                return RunOutcome("incomplete", "PC操作ロック中のため入力しません")
             if action == "already_on":
                 return RunOutcome("completed", "文章入力モードは有効です")
             if action == "empty":
@@ -1042,7 +1053,7 @@ class VoicePilotApp:
 
     def explain_current_screen(self):
         """One click to ask about the screen, even during dictation mode."""
-        if self.busy or self.recording:
+        if self.busy or self.recording or self._control_locked():
             return
         self.busy = True
         self.stop_event.clear()
@@ -1069,6 +1080,8 @@ class VoicePilotApp:
         """Explicit per-task opt-in; never enabled by a spoken web page or model."""
         if self.busy or self.recording or self.dictation_target is not None:
             return
+        if self._control_locked():
+            return
         command = self.command.get().strip()
         if not command:
             self.log("長い作業の目標を入力してください")
@@ -1094,6 +1107,8 @@ class VoicePilotApp:
 
     def send_text(self):
         if self.busy or self.recording:return
+        if self._control_locked():
+            return
         command=self.command.get().strip()
         if not command:
             self.log("音声で話すか、入力欄に指示を入力してください")
@@ -1110,7 +1125,7 @@ class VoicePilotApp:
 
     def send_to_chatgpt(self):
         """Explicit handoff button: never submits to ChatGPT or runs a planner."""
-        if self.busy or self.recording:
+        if self.busy or self.recording or self._control_locked():
             return
         prompt = self.command.get().strip()
         if not prompt:
@@ -1142,6 +1157,8 @@ class VoicePilotApp:
             raise RuntimeError("クリップボードにコピーできませんでした") from errors[0]
 
     def _run_chatgpt(self, prompt: str) -> RunOutcome:
+        if not self.control_permit.allowed():
+            return RunOutcome("incomplete", "PC操作ロック中のため外部連携しません")
         result = prepare_chatgpt_handoff(
             prompt, self.bridge, self._clipboard_copy, webbrowser.open,
             cancelled=self.stop_event.is_set,
@@ -1279,7 +1296,8 @@ class VoicePilotApp:
                              runtime["allow_cloud_ui"],self.stop_event,
                              max_steps=(28 if autonomous else 12),
                              session=self.session,allow_cloud_image=runtime["allow_cloud_image"],
-                             action_gate=gate, autonomous=autonomous)
+                             action_gate=gate, autonomous=autonomous,
+                             control_permit=self.control_permit)
             return agent.run(command)
         finally:
             # The regular microphone must not resume until this monitor has
