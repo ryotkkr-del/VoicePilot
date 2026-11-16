@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
+from .control_permit import DesktopControlPermit
 from .actions import validate_action
 from .compact import compact_for_model
 from .planner import Planner, parse_json_text  # backwards-compatible import
@@ -68,7 +69,8 @@ class VoiceAgent:
                  log: Callable[[str], None], confirm: Callable[[str], bool],
                  allow_cloud_ui: bool, stop_event, max_steps: int = 10,
                  session: dict | None = None, allow_cloud_image: bool = False, action_gate=None,
-                 autonomous: bool = False, limits: LongTaskLimits | None = None):
+                 autonomous: bool = False, limits: LongTaskLimits | None = None,
+                 control_permit: DesktopControlPermit | None = None):
         self.bridge, self.windows, self.planner = bridge, windows, planner
         self.log, self.confirm = log, confirm
         self.allow_cloud_ui, self.stop_event = allow_cloud_ui, stop_event
@@ -78,6 +80,9 @@ class VoiceAgent:
         self.progress = TaskProgress() if autonomous else None
         self.allow_cloud_image = allow_cloud_image
         self.action_gate = action_gate  # optional pause/resume checkpoint
+        # The GUI supplies a volatile permit. Other embedded/test clients can
+        # opt into this gate without changing their existing API contracts.
+        self.control_permit = control_permit
         self._frame: ScreenFrame | None = None
         self.session = session if session is not None else {}
         self._found_paths = set(self.session.get("recent_files", []))
@@ -193,11 +198,13 @@ class VoiceAgent:
         return False
 
     def _execute(self, action: str, args: dict):
-        # A cancellation can arrive between the planner checkpoint and the
-        # actual dispatch. Reject it at the final shared execution boundary.
-        # This cannot roll back actions already in progress.
-        if self.stop_event.is_set():
-            raise InterruptedError("中止済みの操作は実行しません")
+        # This is shared by the fast, reference and AI-planned paths. A
+        # revoked/expired GUI permit MUST fail at the *last* dispatch point,
+        # not only when a task was initially accepted. No implicit re-arming.
+        if self.control_permit is not None:
+            self.control_permit.require()
+        if not self._may_act():
+            raise InterruptedError("停止・一時停止後の操作は実行しません")
         if action in FOREGROUND_BOUND and self._expected_input_hwnd is not None:
             # Recheck at the very last dispatch boundary. Checking only before
             # the confirmation dialog is insufficient: focus may have changed.
@@ -418,6 +425,10 @@ class VoiceAgent:
     def run(self, instruction: str):
         if self.stop_event.is_set():
             return self._finish("interrupted", "操作を中止しました")
+        # Refuse before snapshot, browser access or LLM planning: an
+        # unarmed first run must not inspect the desktop or send context.
+        if self.control_permit is not None and not self.control_permit.allowed():
+            return self._finish("incomplete", "PC操作はロックされています。GUIで明示的に許可してください")
         remember_instruction(self.session, instruction)
         if self._fast_reference(instruction):
             return self._fast_outcome
