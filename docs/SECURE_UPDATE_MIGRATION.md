@@ -2,6 +2,31 @@
 
 2026-11-15 時点の正式運用ゲート。**これは計画と現状の制約であり、更新署名の実装・実機合格を意味しません。**
 
+## v0.23.10で追加した独立署名の**検証コード**（有効化は未完了）
+
+- 不変の`voicepilot_bootstrap.py`に`PINNED_ED25519_PUBLIC_KEY_HEX`を設けました。**現時点の値は空文字です。開発者の本物の公開鍵ではありません。**
+- 秘密鍵を必要としない`cryptography`ライブラリのEd25519公開鍵検証を追加しました。検証する署名ファイルは`VoicePilot-vX.Y.Z.sig.json`で、`schema`、固定リポジトリ名、`version`、ZIPの`sha256`、Base64の`signature`のみを含みます。署名対象は固定プレフィックスとキー順を規定したJSONをUTF-8で連結したバイト列です。
+- 公開鍵が正しく設定されたbootstrapでは、署名のない更新・違う鍵・改ざん・バージョン違い・配信元違いを**更新前に拒否し、旧来のGitHubハッシュ検証へ自動フォールバックしません**。
+- さらに更新適用直前には、署名済みZIPを再ハッシュ・再展開して、ステージ内の各ファイルのハッシュ一覧を**署名済みZIPから再生成した値**と比較します。更新待ちメタデータと展開済みファイルを同時に書き換えてもバイパスできないようにしています。
+- `scripts/sign_release.py`をオフライン専用の署名ツールとして追加しました。**開発者自身のEd25519秘密鍵**をGitHubとリポジトリの外に保存した状態で署名します。デモ用のテスト鍵はCIのメモリ内でのみ毎回生成し、実際の開発者鍵としては使いません。
+- **未達成：** 開発者の本物の署名鍵の安全な生成・別経路での公開鍵指紋確認・公開鍵を埋め込んだbootstrapへの手動移行・署名済みGitHub Releaseの公開。したがって**現在配布中の更新ZIPは独立署名で検証されていません**。旧bootstrapを使う既存の自動更新はGitHubハッシュ確認のままです。
+
+### 将来のオフライン署名手順（鍵の準備と移行を済ませた後）
+
+1. 開発者本人が信頼できるオフライン環境でEd25519の秘密鍵を作成し、PEMをリポジトリ外の暗号化された安全な場所に保管する。**鍵はGitHub Actions Secretsにも登録しない**。
+2. GitHubに公開するものと**完全に同一**のZIPを別経路で検証した後、隔離環境で`python scripts/sign_release.py path/to/VoicePilot-vX.Y.Z.zip --key path/to/offline-ed25519.pem --ask-passphrase`を実行する。生成する`.sig.json`は**公開可能な署名のみ**を含む。
+3. 署名者の公開鍵フィンガープリントを、GitHubの公開ページとは異なる信頼できる方法で確認する。公開鍵を最初から信頼してよいわけではない。
+4. 署名検証するbootstrapが明示的に信頼鍵を固定していることと、実際の配布リリースに署名ZIPと`.sig.json`がそろっていることを検証する。**両方の条件を満たすまで自動更新を「署名済み」としない。**
+5. 旧bootstrapを安全に移す移行手順が完成するまでは、旧環境の自動更新を独立署名によるものと誤認しない。
+
+### 現行署名バイト形式
+
+`b"VoicePilot independent release signature v1\\n" + json.dumps({"schema":1,"repository":"ryotkkr-del/VoicePilot","version":version,"sha256":zip_digest},sort_keys=True,separators=(",",":"),ensure_ascii=True).encode("ascii")`
+
+`version`は`X.Y.Z`、`zip_digest`は小文字の64桁SHA-256です。パッケージZIP全体のSHA-256を対象とし、ファイル名だけへの署名ではありません。暗号ライブラリが利用できないときも署名検証を省略せず更新を拒否します。
+
+---
+
 ## 現行の仕組みと限界
 
 1. `voicepilot_bootstrap.py` が公式GitHub ReleasesからZIPをダウンロードし、GitHubのasset digest（SHA-256）とZIPの内容を検証します。
