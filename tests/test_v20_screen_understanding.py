@@ -68,7 +68,8 @@ class AnswerFlowTests(unittest.TestCase):
         helper = ScreenAssistant(bridge=bridge, windows=windows, planner=planner,
                                  context_provider=context_provider,
                                  stop_event=threading.Event(),
-                                 allow_cloud_ui=ui, allow_cloud_image=image)
+                                 allow_cloud_ui=ui, allow_cloud_image=image,
+                                 cloud_disclosure_confirm=Mock(return_value=True))
         return helper, planner, bridge, windows, context_provider
 
     def test_local_uses_transient_image_and_browser_text(self):
