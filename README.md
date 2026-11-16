@@ -6,6 +6,14 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.10: P0-4 optional pinned Ed25519 verifier (trust anchor not provisioned)
+
+The dependency-free bootstrap **code** now supports independent Ed25519 signature verification through the maintained `cryptography` package (new dependency). When a genuine developer public key is **manually pinned in the immutable bootstrap**, missing/forged signatures, mismatched version/repository/hash, and untrusted signature URLs fail closed; there is no GitHub-hash-only fallback in pinned mode. A signed archive is retained and revalidated immediately before applying each staged file, so tampering with both local staged files and metadata cannot bypass the trust anchor.
+
+`scripts/sign_release.py` is an offline-only helper that signs a validated release ZIP with a developer-provided Ed25519 PEM private key **outside the repository**; tests use ephemeral in-memory keys only. The GUI warns when no trust key is pinned.
+
+**This is not yet an independently signed production update:** `PINNED_ED25519_PUBLIC_KEY_HEX` remains deliberately empty, there is no live developer secret/public-key fingerprint, and existing immutable bootstraps do not update themselves. Present releases remain GitHub-hash-only. Manual out-of-band trust establishment, safe legacy migration, actual signed release publication and Windows hardware integration tests are outstanding. See [docs/SECURE_UPDATE_MIGRATION.md](docs/SECURE_UPDATE_MIGRATION.md).
+
 ## v0.23.9: P0-4 recoverable updater transaction and legacy bootstrap warning
 
 Hardens the **standalone** updater: validate every backup before a rollback, checksum new backup copies, recheck each staged file immediately before replacing installed code, and retain the recovery journal until the new rollback metadata is durably written. Disk-write failure and crash-recovery tests use temporary directories, including tampered/missing backups, changed staged code, and failures during commit metadata creation. Previously created legacy recovery journals remain readable (without new per-file hashes).
