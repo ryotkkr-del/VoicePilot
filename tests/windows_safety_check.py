@@ -11,6 +11,7 @@ file paths, screenshots, microphone data and user content.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import re
 import json
 import os
@@ -203,6 +204,44 @@ def interactive_microphone(*, trials: int = 1) -> str:
     return "PASS" if all(successes) else f"FAIL:{sum(successes)}/3 phrase matches"
 
 
+@dataclass(frozen=True)
+class ScratchNotepadTarget:
+    """Identity captured from a disposable scratch Notepad editor only."""
+
+    hwnd: int
+    token: str
+    control: str
+
+
+def assert_scratch_notepad_target(controller, target: ScratchNotepadTarget) -> None:
+    """Fail closed on a changed HWND, process, document or caret focus.
+
+    No private content or full window title is captured in diagnostic output.
+    The title is only an extra check: executable identity and the UIA focused
+    control are checked independently, once before and once per input unit.
+    """
+    if (not isinstance(target.hwnd, int) or target.hwnd <= 0 or
+            not isinstance(target.token, str) or not target.token.startswith("VoicePilot_Test_") or
+            len(target.token) > 48 or not target.control):
+        raise PermissionError("テスト対象を安全に識別できません")
+    if controller.foreground_hwnd() != target.hwnd:
+        raise PermissionError("テスト用メモ帳以外のウィンドウに切り替わりました")
+    if controller._foreground_process_name() != "notepad.exe":
+        raise PermissionError("入力先のプロセスがテスト用メモ帳ではありません")
+    if target.token.casefold() not in controller.active_window_title().casefold():
+        raise PermissionError("メモ帳のテスト文書が切り替わりました")
+    if controller.dictation_probe() != target.control:
+        raise PermissionError("メモ帳の入力欄が変わりました")
+
+
+def pin_scratch_notepad_target(controller, token: str) -> ScratchNotepadTarget:
+    """Capture a target only after manual focus of the new dummy document."""
+    candidate = ScratchNotepadTarget(controller.foreground_hwnd(),
+                                     token, controller.dictation_probe())
+    assert_scratch_notepad_target(controller, candidate)
+    return candidate
+
+
 def interactive_notepad() -> str:
     """Only if user agrees: launch a scratch Notepad then type one harmless line.
 
@@ -234,21 +273,22 @@ def interactive_notepad() -> str:
         print("7秒後に入力先のプロセス・文書名・カーソルを検証します。")
         time.sleep(7)
         controller = win.WindowsController()
-        if controller._foreground_process_name() != "notepad.exe":
-            return "SKIP:foreground is not Notepad"
-        if token.casefold() not in controller.active_window_title().casefold():
-            return "SKIP:wrong Notepad document"
         try:
-            expected = controller.dictation_probe()
-            message = "VoicePilot literal text test: ^s +{DELETE} %{F4} {ENTER}"
-            controller.dictation_insert(message, expected)
-            # Probe again; never read or upload the content.
-            if controller.dictation_probe() != expected:
-                return "FAIL:editor focus changed during input"
-        except (OSError, RuntimeError, ValueError, PermissionError) as exc:
-            return "SKIP:editor was not safely verified"
+            target = pin_scratch_notepad_target(controller, token)
+            # No newline, save, undo or hotkey: these are just literal chars.
+            # Re-check target HWND, actual process, exact scratch-document
+            # token and UIA caret BEFORE EACH UTF-16 unit is synthesized.
+            message = "VoicePilot dummy: ^s +{DELETE} %{F4}"
+            controller.dictation_insert(
+                message, target.control,
+                extra_guard=lambda: assert_scratch_notepad_target(controller, target),
+            )
+            assert_scratch_notepad_target(controller, target)
+        except (OSError, RuntimeError, ValueError, PermissionError):
+            return "SKIP:editor focus or document could not be safely verified"
         print("テスト用メモ帳に記号がそのまま表示されたか、目視で確認してください。")
-        print("保存操作や他ウィンドウへの操作は行っていません。")
+        print("入力先は各文字の直前に再確認しましたが、フォーカス競合を完全には防げません。")
+        print("保存操作や他ウィンドウへの意図的な操作は行っていません。")
         return "MANUAL:typed into verified scratch Notepad; inspect display"
     finally:
         shutil.rmtree(folder, ignore_errors=True)
