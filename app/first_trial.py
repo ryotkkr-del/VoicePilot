@@ -9,10 +9,13 @@ allows it in this window. No microphone samples are sent to the cloud.
 from __future__ import annotations
 
 import os
+import queue
 import sys
 import threading
 import time
 import tkinter as tk
+
+from .command_preview import preview_command
 
 TRIAL_RECORD_MAX_SECONDS = 8.0
 TRIAL_MODEL = "small"
@@ -45,8 +48,8 @@ class LocalTrial:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title("VoicePilot | 安全なマイク試用")
-        self.root.geometry("560x410")
-        self.root.minsize(440, 350)
+        self.root.geometry("560x480")
+        self.root.minsize(440, 390)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
 
         self.mic = None
@@ -56,8 +59,13 @@ class LocalTrial:
         self.generation = 0
         self.started = 0.0
         self.recognizer = None
+        # The worker MUST NOT call Tk, even via root.after(). A SimpleQueue
+        # cannot deadlock a finished worker if the UI briefly stops polling;
+        # the GUI's busy guard still permits one inference at a time.
+        self.worker_results = queue.SimpleQueue()
         self.allow_download = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="マイクは停止しています")
+        self.preview_state = tk.StringVar(value="指示候補：未確認（PC操作なし）")
         self.platform_safe = trial_platform_ok()
 
         panel = tk.Frame(root, padx=20, pady=18)
@@ -91,6 +99,11 @@ class LocalTrial:
         self.output = tk.Text(panel, height=4, wrap="word")
         self.output.pack(fill="both", expand=True, pady=(4, 4))
         self.output.configure(state="disabled")
+        tk.Label(panel, text="音声指示のプレビュー（実行はしません）",
+                 font=("Yu Gothic UI", 10, "bold"), anchor="w").pack(
+                     fill="x", pady=(7, 2))
+        tk.Label(panel, textvariable=self.preview_state, anchor="w",
+                 wraplength=510, justify="left").pack(fill="x", pady=(0, 7))
         tk.Label(panel,
                  text="Whisperモデルの初回取得を許可した場合だけモデル配布元へ通信します。"
                       "音声データは送信しません。",
@@ -113,6 +126,38 @@ class LocalTrial:
         self.output.insert("1.0", value[:2000])
         self.output.configure(state="disabled")
 
+    def _set_preview(self, result: tuple[str, str]) -> None:
+        if not self.closed:
+            # Labels are constant phrases from a narrow allowlist; the
+            # untrusted transcript is shown only in the separate text area.
+            self.preview_state.set(result[1])
+
+    def _poll_worker(self) -> None:
+        """Called exclusively by the Tk main thread; never from the worker."""
+        if self.closed:
+            return
+        try:
+            generation, text, status = self.worker_results.get_nowait()
+        except queue.Empty:
+            if self.working:
+                self.root.after(120, self._poll_worker)
+            return
+        # A stalled UI may have several completions waiting. Draining avoids
+        # displaying an older transcript after a newer canceled generation.
+        while True:
+            try:
+                generation, text, status = self.worker_results.get_nowait()
+            except queue.Empty:
+                break
+        self.working = False
+        if generation == self.generation:
+            self._set_output(text)
+            self._set_preview(preview_command(text))
+            self._status(status)
+        # A canceled result never reaches either text or action preview.
+        self.record_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+
     def start(self) -> None:
         if self.closed or not self.platform_safe or self.working or self.recording:
             return
@@ -130,6 +175,7 @@ class LocalTrial:
         generation = self.generation
         self.started = time.monotonic()
         self._set_output("")
+        self._set_preview(("empty", "指示候補：録音中（PC操作なし）"))
         self._status("録音中：短く話してください。もう一度停止を押しても終了できます")
         self.record_btn.configure(state="disabled")
         self.stop_btn.configure(state="normal")
@@ -165,6 +211,9 @@ class LocalTrial:
             threading.Thread(target=self._transcribe,
                              args=(samples, generation, allow_network),
                              daemon=True).start()
+            # Schedule the poller from Tk main thread; background threads
+            # must not call root.after / configure / StringVar.set.
+            self.root.after(120, self._poll_worker)
         elif self.working:
             # Native ASR cannot be interrupted safely. Invalidate its result
             # but keep the busy guard until its worker really exits so a
@@ -193,21 +242,10 @@ class LocalTrial:
                       "音声認識に失敗しました。モデル・マイク設定を確認してください")
         finally:
             del samples
-        def finish():
-            if self.closed:
-                return
-            self.working = False
-            if generation == self.generation:
-                self._set_output(text)
-                self._status(status)
-            # A canceled generation must not expose its transcript, but
-            # completing its worker allows another deliberate recording.
-            self.record_btn.configure(state="normal")
-            self.stop_btn.configure(state="disabled")
-        try:
-            self.root.after(0, finish)
-        except (RuntimeError, tk.TclError):
-            pass
+        # Never call Tk from the worker thread (including root.after).
+        # The UI poller handles generation mismatch, cancellation and display.
+        if not self.closed:
+            self.worker_results.put((generation, text, status))
 
     def close(self) -> None:
         if self.closed:

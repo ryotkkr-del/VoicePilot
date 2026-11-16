@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import os
+import queue
 from pathlib import Path
 import sys
 import threading
@@ -93,6 +94,7 @@ class TrialModeTests(unittest.TestCase):
         view.generation = 1
         view.started = 0.0
         view.recognizer = None
+        view.worker_results = queue.SimpleQueue()
         view.allow_download = Mock()
         view.allow_download.get.return_value = False
         view.platform_safe = True
@@ -101,7 +103,9 @@ class TrialModeTests(unittest.TestCase):
         view.record_btn = Mock()
         view.stop_btn = Mock()
         view._set_output = Mock()
+        view._set_preview = Mock()
         view._status = Mock()
+        view.root.after.side_effect = None
         return view
 
     def test_transcription_only_displays_text_does_not_automate_desktop(self):
@@ -113,6 +117,8 @@ class TrialModeTests(unittest.TestCase):
             view.working = True
             view._transcribe(np.ones(1600, np.float32), view.generation, False)
         constructor.assert_called_once_with("small", local_files_only=True)
+        self.assertTrue(view.working)
+        view._poll_worker()
         self.assertFalse(view.working)
         self.assertEqual(view._set_output.call_args.args[0], result)
         view.stop_btn.configure.assert_called_with(state="disabled")
@@ -128,8 +134,11 @@ class TrialModeTests(unittest.TestCase):
         model.transcribe.return_value = result
         with patch("app.audio.SpeechRecognizer", return_value=model):
             view._transcribe(np.ones(1600, np.float32), 1, False)
+        self.assertTrue(view.working)
+        view._poll_worker()
         self.assertFalse(view.working)
         view._set_output.assert_not_called()
+        view._set_preview.assert_not_called()
         self.assertNotIn(result, str(view._status.call_args_list))
 
     def test_explicit_whisper_network_permission_can_be_changed(self):
