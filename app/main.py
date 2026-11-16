@@ -16,6 +16,7 @@ import webbrowser
 from tkinter import ttk, messagebox
 
 from .agent import VoiceAgent, RunOutcome
+from .control_permit import DesktopControlPermit
 from .task_policy import LongTaskLimits
 from .planner import Planner
 from .audio import Microphone, SpeechRecognizer
@@ -127,6 +128,8 @@ class VoicePilotApp:
         self.root = root
         self.ui = UIDispatcher(root)
         self.config = load_config()
+        # Never persist permission: all process launches begin locked.
+        self.control_permit = DesktopControlPermit()
         self.bridge = BrowserBridge(self.config["token"])
         self.bridge.start()
         self._extension_version_checked = False
@@ -161,6 +164,7 @@ class VoicePilotApp:
         self.root.after(500, self.track_foreground)
         self.root.after(700, self.refresh_connection)
         self.root.after(10_000, self.release_idle_model)
+        self.root.after(10_000, self._refresh_control_lock_timer)
         # Check stable GitHub Releases in the background; no GUI or LLM overhead.
         self.root.after(12_000, self._start_update_check)
         if sys.platform == "win32":
@@ -169,7 +173,7 @@ class VoicePilotApp:
                 lambda: self.ui.post(self.abort),
                 on_error=self.log,
             )
-        self.log("起動しました。録音ボタンか Ctrl+Alt+Space で話してください。")
+        self.log("PC操作は初期状態でロックされています。5分間の一時許可が必要です。")
         revision = bootstrap_security_revision()
         if revision < 3:
             self.log("注意：旧bootstrapは署名付き更新を検証しません。アプリだけ更新しても安全な更新基盤には切り替わりません。")
@@ -224,6 +228,18 @@ class VoicePilotApp:
         self.settings_button = self.button(head, "設定", self.toggle_settings)
         self.settings_button.pack(side="right", padx=(0,8))
         tk.Label(shell,text="声でPCを操作。難しい画面では画像も認識します。",font=(FONT,10),bg=BG,fg=MUTED).pack(anchor="w",pady=(1,5))
+        lock_card = self.card(shell, 8)
+        lock_row = tk.Frame(lock_card, bg=WHITE)
+        lock_row.pack(fill="x")
+        self.control_lock_label = tk.Label(
+            lock_row, text="● PC操作はロック中", bg=WHITE, fg="#B91C1C",
+            font=(FONT, 10, "bold"))
+        self.control_lock_label.pack(side="left")
+        self.control_lock_button = self.button(
+            lock_row, "5分間だけ操作を許可", self.toggle_control_permission)
+        self.control_lock_button.pack(side="right")
+        tk.Label(lock_card, text="起動時は操作禁止。停止で再ロックします。",
+                 bg=WHITE, fg=MUTED, font=(FONT, 9)).pack(anchor="w", pady=(5, 0))
 
         talk = self.card(shell, 10)
         row = tk.Frame(talk,bg=WHITE)
@@ -634,6 +650,53 @@ class VoicePilotApp:
         self.rec_button.configure(text=title,bg=color)
         if self.mini and self.mini.winfo_exists():
             self.mini_rec_button.configure(text=title,bg=color)
+
+    def _refresh_control_lock_timer(self):
+        if self._closing:
+            return
+        self._refresh_control_lock_ui()
+        self.root.after(10_000, self._refresh_control_lock_timer)
+
+    def _refresh_control_lock_ui(self):
+        if self.control_permit.allowed():
+            self.control_lock_label.configure(
+                text="● PC操作を一時許可中（最大5分）", fg="#166534")
+            self.control_lock_button.configure(text="操作をロック")
+        else:
+            self.control_lock_label.configure(
+                text="● PC操作はロック中", fg="#B91C1C")
+            self.control_lock_button.configure(text="5分間だけ操作を許可")
+
+    def toggle_control_permission(self):
+        """Only a click in this local GUI can arm desktop execution."""
+        if self.control_permit.allowed():
+            self.control_permit.revoke()
+            self.abort()
+            self._refresh_control_lock_ui()
+            self.log("PC操作を再ロックしました。実行中の処理にも停止を要求しました")
+            return
+        if self.busy or self.recording or self._closing:
+            self.log("録音や作業が終了してからPC操作を許可してください")
+            return
+        if not messagebox.askyesno(
+                "PC操作の一時許可 · VoicePilot",
+                "この試作アプリはWindows実機で正式な安全検証を完了していません。\\n"
+                "外部アプリ・ブラウザ・ファイルを操作する場合があります。\\n"
+                "重要な文書を閉じ、ダミーデータでのみ試してください。\\n\\n"
+                "この起動中に限り、PC操作を最大5分間許可しますか？",
+                parent=self.root):
+            self.log("PC操作のロックを維持しました")
+            return
+        self.control_permit.arm()
+        self._refresh_control_lock_ui()
+        self.log("PC操作を最大5分間だけ許可しました。停止・終了すると再ロックされます")
+
+    def _control_locked(self) -> bool:
+        if self.control_permit.allowed():
+            return False
+        self.log("PC操作はロック中です。GUIから明示的に許可してください")
+        self._refresh_control_lock_ui()
+        return True
 
     def toggle_handsfree(self):
         """Explicitly opt into a time-limited sequential microphone session."""
