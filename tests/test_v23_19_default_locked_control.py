@@ -191,6 +191,23 @@ class GUIControlTests(unittest.TestCase):
         view.abort()
         self.assertFalse(view.control_permit.allowed())
 
+    def test_old_or_unsigned_bootstrap_never_checks_github_releases(self):
+        view = self.view()
+        with patch("app.main.bootstrap_security_revision", return_value=3), \
+                patch("app.main.bootstrap_signing_key_configured", return_value=False), \
+                patch("app.main.threading.Thread") as thread:
+            view._start_update_check()
+        thread.assert_not_called()
+
+    def test_text_command_cannot_rearm_through_config(self):
+        view = self.view()
+        view.config = {"desktop_enabled": True}
+        view._control_locked = Mock(return_value=True)
+        view.command = Mock()
+        view.send_text()
+        view.command.get.assert_not_called()
+        self.assertFalse(view.control_permit.allowed())
+
     def test_production_agent_receives_same_permission(self):
         view = self.view()
         view.handsfree = Mock(enabled=False)
@@ -202,6 +219,7 @@ class GUIControlTests(unittest.TestCase):
         view.confirm = Mock()
         view.stop_event = threading.Event()
         view.session = {}
+        view.control_permit.arm()
         with patch("app.main.Planner"), patch("app.main.VoiceAgent") as agent:
             agent.return_value.run.return_value = Mock(status="incomplete")
             view._run_agent("ダミー", {"provider": "ollama",
