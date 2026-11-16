@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.11: fail closed without a verified developer signing key
+
+The revision-3 immutable updater now **refuses automatic updates** unless a genuine Ed25519 developer public key has been independently verified and pinned. No empty-key fallback to GitHub-only SHA-256 remains. Any unsigned pending stage from an older bootstrap is also rejected, and every staged file is rechecked against a ZIP whose SHA-256 is bound to the Ed25519 signature. Existing updater/rollback tests now use ephemeral signed ZIPs; the Windows key-path safety check is normalized.
+
+**This is an unsigned prototype release.** No production developer signer has been provisioned, and the automated publisher does not have a developer private key. A fresh revision-3 bootstrap therefore cannot automatically update until a trusted key and signed release are supplied. Existing installations retain their old immutable bootstrap through normal updates, so the old unsigned updater remains unprotected and requires a separate safe manual migration. No end-to-end real Windows test has been performed.
+
 ## v0.23.10: P0-4 optional pinned Ed25519 verifier (trust anchor not provisioned)
 
 The dependency-free bootstrap **code** now supports independent Ed25519 signature verification through the maintained `cryptography` package (new dependency). In the new revision-3 bootstrap, a genuine developer public key **must be manually pinned** or **all new automatic updates fail closed**. Missing/forged signatures, mismatched version/repository/hash, and untrusted signature URLs are rejected, with no GitHub-hash-only fallback. A signed archive is retained and revalidated immediately before applying each staged file, so tampering with both local staged files and metadata cannot bypass the trust anchor.
