@@ -95,7 +95,7 @@ class GUIWorkerBoundaryTests(unittest.TestCase):
         view.closed = False
         view.generation = 3
         view.recognizer = Mock()
-        view.worker_results = queue.Queue(maxsize=1)
+        view.worker_results = queue.SimpleQueue()
         view.allow_download = Mock()
         view.status = Mock()
         view.preview_state = Mock()
