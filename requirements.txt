@@ -6,3 +6,5 @@ pywinauto>=0.6.9,<1
 Pillow>=10,<13
 # Lightweight built-in Windows SAPI speech feedback uses pywin32.
 pywin32>=306,<400; sys_platform == "win32"
+# Ed25519 verification for the immutable signed-update bootstrap.
+cryptography>=43,<50
