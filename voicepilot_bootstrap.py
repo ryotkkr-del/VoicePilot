@@ -7,6 +7,7 @@ Only *published* releases from one pinned GitHub repository are eligible.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -24,7 +25,11 @@ import uuid
 import unicodedata
 import zipfile
 
-BOOTSTRAP_SECURITY_REVISION = 2  # Backup preflight + durable transaction recovery (not signed)
+BOOTSTRAP_SECURITY_REVISION = 3  # Signed release verification support; trust key not provisioned
+# Deliberately EMPTY until the developer provisions a real, independently
+# verified Ed25519 public key in the immutable bootstrap through a manual
+# migration. Never load a trusted key from a GitHub Release or environment.
+PINNED_ED25519_PUBLIC_KEY_HEX = ""
 
 REPO = "ryotkkr-del/VoicePilot"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
@@ -119,6 +124,79 @@ def _download(url: str, destination: Path) -> str:
     return h.hexdigest()
 
 
+_SIGNED_SCHEMA = 1
+_SIGNED_ARCHIVE_NAME = "_signed_release.zip"
+_SIGNED_KEYS = frozenset({"schema", "repository", "version", "sha256", "signature"})
+
+
+def _signing_message(version: str, digest: str) -> bytes:
+    """One canonical, domain-separated message for the release authenticity."""
+    version_tuple(version)
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise UpdateError("署名対象のハッシュ値が不正です")
+    body = {"schema": _SIGNED_SCHEMA, "repository": REPO,
+            "version": version, "sha256": digest}
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    return b"VoicePilot independent release signature v1\\n" + canonical.encode("ascii")
+
+
+def _verify_signed_release(envelope: dict, version: str, digest: str) -> None:
+    """Verify a pinned Ed25519 signature independently from the GitHub API.
+
+    This is NOT active when PINNED_ED25519_PUBLIC_KEY_HEX is empty. In a
+    provisioned bootstrap any absent, malformed, mismatching or forged
+    signature must fail closed, never fall back to GitHub-provided hashes.
+    """
+    key_hex = PINNED_ED25519_PUBLIC_KEY_HEX
+    if not isinstance(key_hex, str) or not re.fullmatch(r"[0-9a-f]{64}", key_hex):
+        raise UpdateError("信頼済み開発者公開鍵が設定されていません")
+    if not isinstance(envelope, dict) or set(envelope) != _SIGNED_KEYS:
+        raise UpdateError("更新の署名データが不正です")
+    if (type(envelope["schema"]) is not int or envelope["schema"] != _SIGNED_SCHEMA
+            or envelope["repository"] != REPO or envelope["version"] != version
+            or envelope["sha256"] != digest):
+        raise UpdateError("更新の署名対象が一致しません")
+    signature_text = envelope["signature"]
+    if not isinstance(signature_text, str) or len(signature_text) > 128:
+        raise UpdateError("更新の署名形式が不正です")
+    try:
+        signature = base64.b64decode(signature_text, validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise UpdateError("更新の署名形式が不正です") from exc
+    if len(signature) != 64:
+        raise UpdateError("更新の署名形式が不正です")
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise UpdateError("署名検証ライブラリが利用できません。更新を停止しました") from exc
+    try:
+        Ed25519PublicKey.from_public_bytes(bytes.fromhex(key_hex)).verify(
+            signature, _signing_message(version, digest)
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise UpdateError("開発者署名の照合に失敗しました。更新を停止しました") from exc
+
+
+def _fetch_signature_asset(url: str) -> dict:
+    """Retrieve only a strictly bounded JSON asset from the trusted URL."""
+    request = urllib.request.Request(url, headers={"User-Agent": "VoicePilot-Updater/1"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read(2049)
+    except (OSError, TimeoutError) as exc:
+        raise UpdateError("署名ファイルを取得できないため更新を停止しました") from exc
+    if len(raw) > 2048:
+        raise UpdateError("更新の署名データが大きすぎます")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UpdateError("更新の署名データを解析できません") from exc
+    if not isinstance(payload, dict):
+        raise UpdateError("更新の署名データが不正です")
+    return payload
+
+
 def _safe_name(name: str) -> str:
     if "\\" in name or "\x00" in name or not name or name.startswith("/"):
         raise UpdateError("更新アーカイブのパスが不正です")
@@ -187,7 +265,7 @@ def extract_checked(archive: Path, folder: Path, expected_version: str) -> dict[
 
 
 def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = False,
-                    fetch_release=None, download=None) -> str:
+                    fetch_release=None, download=None, fetch_signature=None) -> str:
     """Network only at idle: check, validate, and stage. Never modify live code."""
     cache = cache or data_dir()
     root = Path(root).resolve()
@@ -230,9 +308,16 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         try:
             prior = _read_json(pending_path)
             if version_tuple(prior["version"]) >= version_tuple(version):
+                if PINNED_ED25519_PUBLIC_KEY_HEX:
+                    # Do not silently accept a staged unsigned update after
+                    # installing a signed-mode trust anchor.
+                    _verify_signed_release(prior.get("signed_release"),
+                                           prior["version"], prior.get("sha256"))
                 _atomic_json(state, {"timestamp": time.time()})
                 return "staged"
         except (ValueError, KeyError, UpdateError):
+            if PINNED_ED25519_PUBLIC_KEY_HEX:
+                raise UpdateError("既存の更新待ちデータの署名を検証できません")
             pass
     asset_name = f"VoicePilot-v{version}.zip"
     assets = [x for x in release.get("assets", []) if x.get("name") == asset_name and x.get("state") == "uploaded"]
@@ -245,8 +330,20 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         raise UpdateError("GitHub発行のSHA-256ハッシュがありません")
     expected = match.group(1)
     asset_url = asset.get("browser_download_url", "")
-    if not isinstance(asset_url, str) or not asset_url.startswith(f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}") or asset_url != f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}":
+    if not isinstance(asset_url, str) or asset_url != f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}":
         raise UpdateError("更新ファイルのURLが不正です")
+    signed_envelope = None
+    if PINNED_ED25519_PUBLIC_KEY_HEX:
+        signature_name = f"VoicePilot-v{version}.sig.json"
+        matching = [x for x in release.get("assets", []) if
+                    x.get("name") == signature_name and x.get("state") == "uploaded"]
+        if len(matching) != 1:
+            raise UpdateError("開発者署名がないため更新を停止しました")
+        signature_url = f"https://github.com/{REPO}/releases/download/{tag}/{signature_name}"
+        if matching[0].get("browser_download_url") != signature_url:
+            raise UpdateError("署名ファイルの配信元が不正です")
+        signed_envelope = (fetch_signature or _fetch_signature_asset)(signature_url)
+        _verify_signed_release(signed_envelope, version, expected)
     previous_stage = None
     if pending_path.exists():
         try:
@@ -268,8 +365,16 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         stage_id = "stage-" + uuid.uuid4().hex
         stage = cache / stage_id
         os.replace(extracted, stage)
-        _atomic_json(pending_path, {"version": version, "stage": stage_id,
-                                   "sha256": expected, "files": hashes})
+        metadata = {"version": version, "stage": stage_id,
+                    "sha256": expected, "files": hashes}
+        if signed_envelope is not None:
+            # Retain the authenticated archive, not merely a *local* hash map.
+            # On apply, re-extract the signed archive to regenerate trusted
+            # per-file checksums. Otherwise attackers editing pending.json and
+            # staged files together could bypass a signature check.
+            shutil.copyfile(archive, stage / _SIGNED_ARCHIVE_NAME)
+            metadata["signed_release"] = signed_envelope
+        _atomic_json(pending_path, metadata)
     finally:
         shutil.rmtree(temp_folder, ignore_errors=True)
     _atomic_json(state, {"timestamp": time.time()})
@@ -403,6 +508,20 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
     hashes = pending.get("files")
     if not isinstance(hashes, dict) or len(hashes) > MAX_FILES or not _REQUIRED.issubset(hashes):
         raise UpdateError("更新ファイル一覧が不正です")
+    if PINNED_ED25519_PUBLIC_KEY_HEX:
+        digest = pending.get("sha256")
+        _verify_signed_release(pending.get("signed_release"), version, digest)
+        # The locally stored file-hash list is NOT authenticated by the
+        # signature. Regenerate it from the ZIP whose digest *is* signed.
+        signed_archive = stage / _SIGNED_ARCHIVE_NAME
+        if signed_archive.is_symlink() or not signed_archive.is_file():
+            raise UpdateError("署名付きの更新ZIPが見つかりません")
+        if hashlib.sha256(signed_archive.read_bytes()).hexdigest() != digest:
+            raise UpdateError("署名済みZIPのハッシュが一致しません")
+        with tempfile.TemporaryDirectory(prefix="signed-check-", dir=cache) as folder:
+            trusted_hashes = extract_checked(signed_archive, Path(folder), version)
+        if hashes != trusted_hashes:
+            raise UpdateError("更新ファイル一覧が署名付きZIPと一致しません")
     # Verify the complete staged package before touching a single installed file.
     for name, digest in hashes.items():
         target = _ensure_inside(root, name)
