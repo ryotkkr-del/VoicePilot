@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from scripts import p0_acceptance as acceptance
+from app import p0_acceptance as acceptance
 
 
 class P0AcceptanceEvidenceTests(unittest.TestCase):
