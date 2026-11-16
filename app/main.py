@@ -343,7 +343,7 @@ class VoicePilotApp:
                        variable=self.cloud_permission,command=self.save_settings,bg=WHITE,
                        activebackground=WHITE,fg=INK,font=(FONT,9)).pack(anchor="w",pady=(7,0))
         self.cloud_image_permission=tk.BooleanVar(value=self.config.get("allow_cloud_image",False))
-        tk.Checkbutton(settings,text="画像での操作が必要なとき、スクリーンショットの送信も許可（Geminiのみ）",
+        tk.Checkbutton(settings,text="Geminiへの画像送信を許可（送信する画像は毎回確認）",
                        variable=self.cloud_image_permission,command=self.save_settings,bg=WHITE,
                        activebackground=WHITE,fg=INK,font=(FONT,9)).pack(anchor="w",pady=(4,0))
         tk.Label(settings,text="キーは保存しません。無料枠には回数制限があり、送信データの取扱いに注意してください。",
@@ -1309,7 +1309,9 @@ class VoicePilotApp:
                 return RunOutcome("interrupted", "画面の説明を中止しました")
             except PermissionError as exc:
                 return RunOutcome("incomplete", str(exc))
-            self.log("画面の説明：" + answer)
+            # The answer can paraphrase private page text. Show it as the
+            # result, but never duplicate it into the diagnostic action log.
+            self.log("画面の説明を生成しました（本文は操作ログに残しません）")
             return RunOutcome("answered", answer)
         gate = None
         monitor = None
