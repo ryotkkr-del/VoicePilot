@@ -21,6 +21,7 @@ import re
 import shutil
 import sys
 import tempfile
+import zipfile
 from dataclasses import dataclass
 
 from voicepilot_bootstrap import (
@@ -119,22 +120,25 @@ def _verify_archive_copy(local_zip: Path, signature: Path, key_hex: str,
     if not isinstance(signature_text, str) or len(signature_text) > 128:
         raise MigrationError("署名データが不正です")
     try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise MigrationError("署名ライブラリが利用できません。移行を拒否します") from exc
+    try:
         raw_signature = base64.b64decode(signature_text, validate=True)
         if (len(raw_signature) != 64 or
                 base64.b64encode(raw_signature).decode("ascii") != signature_text):
             raise ValueError("not canonical Base64 Ed25519")
-        from cryptography.exceptions import InvalidSignature
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
         Ed25519PublicKey.from_public_bytes(public_bytes).verify(
             raw_signature, _signing_message(version, digest)
         )
-    except (ImportError, ValueError, binascii.Error, InvalidSignature) as exc:
+    except (ValueError, binascii.Error, InvalidSignature) as exc:
         raise MigrationError("開発者の独立署名を検証できません。移行を拒否します") from exc
 
     extracted.mkdir()
     try:
         extract_checked(local_zip, extracted, version)
-    except (UpdateError, OSError, ValueError) as exc:
+    except (UpdateError, OSError, ValueError, zipfile.BadZipFile) as exc:
         raise MigrationError("署名済みZIPの内容が安全な配布形式ではありません") from exc
 
     bootstrap = extracted / "voicepilot_bootstrap.py"
