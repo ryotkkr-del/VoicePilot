@@ -62,18 +62,18 @@ class VerifiedBundle:
 
 
 def _canonical_message(version: str, digest: str) -> bytes:
-    if not re.fullmatch(r"(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)", version):
+    if not re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", version):
         raise MigrationError("署名対象バージョンが不正です")
     if _HEX_KEY.fullmatch(digest) is None:
         raise MigrationError("署名対象ハッシュが不正です")
     body = {"schema": 1, "repository": REPO, "version": version, "sha256": digest}
-    return (b"VoicePilot independent release signature v1\\n" +
+    return (b"VoicePilot independent release signature v1\n" +
             json.dumps(body, sort_keys=True, separators=(",", ":"),
                        ensure_ascii=True).encode("ascii"))
 
 
 def _validated_name(name: str) -> str:
-    if not name or "\\\\" in name or "\\x00" in name or name.startswith("/"):
+    if not name or "\\" in name or "\x00" in name or name.startswith("/"):
         raise MigrationError("ZIPに不正なパスがあります")
     path = PurePosixPath(name)
     if (path.as_posix() != name or
@@ -83,7 +83,7 @@ def _validated_name(name: str) -> str:
     for part in path.parts:
         if (part.startswith(".") or part.endswith((" ", ".")) or
                 any(ord(ch) < 32 or ch in '<>:"|?*' for ch in part) or
-                re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\\..*)?", part)):
+                re.fullmatch(r"(?i)(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\..*)?", part)):
             raise MigrationError("ZIPのWindows予約パスを拒否しました")
     if not (name in _ALLOWED_FILES or name.startswith(_ALLOWED_DIRS)):
         raise MigrationError("ZIPに許可外のファイルがあります")
@@ -216,7 +216,6 @@ def _verify_archive_copy(local_zip: Path, signature: Path, key_hex: str,
     except (ValueError, binascii.Error, InvalidSignature) as exc:
         raise MigrationError("開発者の独立署名を検証できません。移行を拒否します") from exc
 
-    extracted.mkdir()
     try:
         _extract_signed_archive(local_zip, extracted, version)
     except (OSError, ValueError, RuntimeError, zipfile.BadZipFile) as exc:
