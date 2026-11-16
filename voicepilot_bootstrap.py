@@ -31,6 +31,10 @@ BOOTSTRAP_SECURITY_REVISION = 3  # Ed25519-signed update gate (unconfigured unti
 # bootstrap during an explicit, trusted installation. Never load a key from
 # the GitHub release, unsigned config, environment variable or updated app.
 PINNED_SIGNER_PUBLIC_KEY_B64 = ""
+# Keep an authenticated ZIP outside the application update file list so the
+# staged file hashes can be reconstructed at apply time without trusting a
+# user-writable pending.json manifest.
+_SIGNED_ARCHIVE_NAME = "_signed_release.zip"
 
 REPO = "ryotkkr-del/VoicePilot"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
@@ -344,6 +348,10 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         stage_id = "stage-" + uuid.uuid4().hex
         stage = cache / stage_id
         os.replace(extracted, stage)
+        # Preserve the EXACT ZIP whose digest is covered by the developer's
+        # signature. On apply, reconstruct the trusted file hashes from this
+        # ZIP to prevent altering staged files and pending.json together.
+        shutil.copyfile(archive, stage / _SIGNED_ARCHIVE_NAME)
         _atomic_json(pending_path, {"version": version, "stage": stage_id,
                                    "sha256": expected, "signature_b64": signature_b64,
                                    "files": hashes})
@@ -476,7 +484,8 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
         return "current"
     # This is a second signature gate: an older bootstrap may have staged an
     # unsigned package. Refuse before touching live code.
-    _verify_signed_release("v" + version, pending.get("sha256"),
+    signed_digest = pending.get("sha256")
+    _verify_signed_release("v" + version, signed_digest,
                            pending.get("signature_b64"))
     stage = cache / stage_id
     if stage.is_symlink():
@@ -484,6 +493,19 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
     hashes = pending.get("files")
     if not isinstance(hashes, dict) or len(hashes) > MAX_FILES or not _REQUIRED.issubset(hashes):
         raise UpdateError("更新ファイル一覧が不正です")
+    # The cache is user-writable. Both staged bytes and pending.json hashes
+    # can be modified together; a signature on the ZIP digest alone would
+    # not protect the staged directory. Reconstruct from the signed archive.
+    signed_archive = stage / _SIGNED_ARCHIVE_NAME
+    if (signed_archive.is_symlink() or not signed_archive.is_file()
+            or signed_archive.stat().st_size > MAX_ARCHIVE_BYTES):
+        raise UpdateError("署名付きの更新ZIPが見つからないか不正です")
+    if hashlib.sha256(signed_archive.read_bytes()).hexdigest() != signed_digest:
+        raise UpdateError("署名済みZIPのSHA-256が一致しません")
+    with tempfile.TemporaryDirectory(prefix="signed-check-", dir=cache) as temp_dir:
+        trusted_hashes = extract_checked(signed_archive, Path(temp_dir), version)
+    if hashes != trusted_hashes:
+        raise UpdateError("更新ファイル一覧が署名済みZIPと一致しません")
     # Verify the complete staged package before touching a single installed file.
     for name, digest in hashes.items():
         target = _ensure_inside(root, name)
