@@ -7,6 +7,8 @@ Only *published* releases from one pinned GitHub repository are eligible.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -24,7 +26,11 @@ import uuid
 import unicodedata
 import zipfile
 
-BOOTSTRAP_SECURITY_REVISION = 2  # Backup preflight + durable transaction recovery (not signed)
+BOOTSTRAP_SECURITY_REVISION = 3  # Ed25519-signed update gate (unconfigured until developer pins their key)
+# The signing key must be authenticated OFFLINE and embedded in this immutable
+# bootstrap during an explicit, trusted installation. Never load a key from
+# the GitHub release, unsigned config, environment variable or updated app.
+PINNED_SIGNER_PUBLIC_KEY_B64 = ""
 
 REPO = "ryotkkr-del/VoicePilot"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
@@ -96,6 +102,60 @@ def _api_get(url: str) -> dict:
     if not isinstance(obj, dict):
         raise UpdateError("更新情報が不正です")
     return obj
+
+
+def _signed_payload(tag: str, digest: str) -> bytes:
+    """Canonical and domain-separated Ed25519 message (no external JSON)."""
+    if not isinstance(tag, str) or not _TAG.fullmatch(tag):
+        raise UpdateError("署名対象のバージョンが不正です")
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise UpdateError("署名対象のSHA-256が不正です")
+    asset = f"VoicePilot-{tag}.zip"
+    return (f"VoicePilot signed release v1\\n{REPO}\\n{tag}\\n{asset}\\n{digest}\\n").encode("ascii")
+
+
+def _verify_signed_release(tag: str, digest: str, signature_b64: str) -> str:
+    """Reject updates unless their digest was signed by the PINNED developer key.
+
+    GitHub's asset digest is a transport checksum, not this trust anchor.
+    The bootstrap is intentionally immutable; empty/invalid pin fails closed.
+    """
+    if not isinstance(PINNED_SIGNER_PUBLIC_KEY_B64, str) or not PINNED_SIGNER_PUBLIC_KEY_B64:
+        raise UpdateError("開発者公開鍵が未設定です。署名済み更新を検証できないため自動更新を停止しました")
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError as exc:
+        raise UpdateError("署名検証の依存ライブラリがありません。自動更新を停止しました") from exc
+    try:
+        public = base64.b64decode(PINNED_SIGNER_PUBLIC_KEY_B64, validate=True)
+        if len(public) != 32:
+            raise ValueError("wrong public key length")
+        if not isinstance(signature_b64, str):
+            raise ValueError("no signature")
+        sig = base64.b64decode(signature_b64, validate=True)
+        if len(sig) != 64 or base64.b64encode(sig).decode("ascii") != signature_b64:
+            raise ValueError("noncanonical signature")
+        Ed25519PublicKey.from_public_bytes(public).verify(sig, _signed_payload(tag, digest))
+    except (InvalidSignature, binascii.Error, UnicodeError, ValueError) as exc:
+        raise UpdateError("リリースの開発者署名が無効です。更新を拒否しました") from exc
+    return signature_b64
+
+
+def _download_signature(url: str) -> str:
+    """Read only the fixed GitHub signature sidecar, max 128 ASCII bytes."""
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "https" or parsed.netloc.lower() != "github.com" or not parsed.path.startswith(f"/{REPO}/releases/download/"):
+        raise UpdateError("開発者署名の配信元が不正です")
+    request = urllib.request.Request(url, headers={"User-Agent": "VoicePilot-Updater/1"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = response.read(129)
+    if len(payload) > 128:
+        raise UpdateError("開発者署名が大きすぎます")
+    try:
+        return payload.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise UpdateError("開発者署名の形式が不正です") from exc
 
 
 def _download(url: str, destination: Path) -> str:
@@ -187,7 +247,7 @@ def extract_checked(archive: Path, folder: Path, expected_version: str) -> dict[
 
 
 def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = False,
-                    fetch_release=None, download=None) -> str:
+                    fetch_release=None, download=None, download_signature=None) -> str:
     """Network only at idle: check, validate, and stage. Never modify live code."""
     cache = cache or data_dir()
     root = Path(root).resolve()
@@ -230,6 +290,10 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         try:
             prior = _read_json(pending_path)
             if version_tuple(prior["version"]) >= version_tuple(version):
+                # Never trust a pending stage prepared by an older unsigned
+                # bootstrap or by an interrupted/unknown updater.
+                _verify_signed_release("v" + prior["version"], prior["sha256"],
+                                       prior["signature_b64"])
                 _atomic_json(state, {"timestamp": time.time()})
                 return "staged"
         except (ValueError, KeyError, UpdateError):
@@ -245,8 +309,20 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         raise UpdateError("GitHub発行のSHA-256ハッシュがありません")
     expected = match.group(1)
     asset_url = asset.get("browser_download_url", "")
-    if not isinstance(asset_url, str) or not asset_url.startswith(f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}") or asset_url != f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}":
+    if not isinstance(asset_url, str) or asset_url != f"https://github.com/{REPO}/releases/download/{tag}/{asset_name}":
         raise UpdateError("更新ファイルのURLが不正です")
+    # Verify the independent developer signature BEFORE downloading/placing
+    # executable release bytes. Never fallback to GitHub SHA-256 alone.
+    signature_name = asset_name + ".sig"
+    sig_assets = [x for x in release.get("assets", [])
+                  if x.get("name") == signature_name and x.get("state") == "uploaded"]
+    if len(sig_assets) != 1:
+        raise UpdateError("署名ファイルがありません。署名のない更新は拒否します")
+    expected_sig_url = f"https://github.com/{REPO}/releases/download/{tag}/{signature_name}"
+    if sig_assets[0].get("browser_download_url") != expected_sig_url:
+        raise UpdateError("開発者署名のURLが不正です")
+    signature_b64 = (download_signature or _download_signature)(expected_sig_url)
+    signature_b64 = _verify_signed_release(tag, expected, signature_b64)
     previous_stage = None
     if pending_path.exists():
         try:
@@ -269,7 +345,8 @@ def check_and_stage(root: Path, cache: Path | None = None, *, force: bool = Fals
         stage = cache / stage_id
         os.replace(extracted, stage)
         _atomic_json(pending_path, {"version": version, "stage": stage_id,
-                                   "sha256": expected, "files": hashes})
+                                   "sha256": expected, "signature_b64": signature_b64,
+                                   "files": hashes})
     finally:
         shutil.rmtree(temp_folder, ignore_errors=True)
     _atomic_json(state, {"timestamp": time.time()})
@@ -397,6 +474,10 @@ def apply_pending(root: Path, cache: Path | None = None) -> str:
     if version_tuple(version) <= version_tuple(app_version(root)):
         pending_file.unlink(missing_ok=True)
         return "current"
+    # This is a second signature gate: an older bootstrap may have staged an
+    # unsigned package. Refuse before touching live code.
+    _verify_signed_release("v" + version, pending.get("sha256"),
+                           pending.get("signature_b64"))
     stage = cache / stage_id
     if stage.is_symlink():
         raise UpdateError("更新ステージのリンクは許可できません")
