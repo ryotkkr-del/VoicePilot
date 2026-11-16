@@ -16,7 +16,7 @@ import webbrowser
 from tkinter import ttk, messagebox
 
 from .agent import VoiceAgent, RunOutcome
-from .control_permit import DesktopControlPermit
+from .control_permit import DesktopControlPermit, DesktopControlLocked
 from .task_policy import LongTaskLimits
 from .planner import Planner
 from .audio import Microphone, SpeechRecognizer
@@ -1015,6 +1015,16 @@ class VoicePilotApp:
         finally:
             self.mark_idle(status, detail)
 
+    def _dictation_checkpoint(self) -> None:
+        """Reject pending and in-progress dictated input after stop or relock.
+
+        WindowsController calls this before each UTF-16 unit when supplied
+        as its extra_guard. Already-delivered text cannot be rolled back.
+        """
+        if self.stop_event.is_set():
+            raise InterruptedError("文章入力を中止しました")
+        self.control_permit.require()
+
     def _run_dictation_command(self, command: str) -> RunOutcome:
         try:
             intent = dictation_intent(command, self.dictation_target is not None)
@@ -1027,8 +1037,10 @@ class VoicePilotApp:
                 self.dictation_target = None
                 return RunOutcome("incomplete", "PC操作ロック中のため入力しません")
             if action == "start":
+                self._dictation_checkpoint()
                 self.restore_target()
-                self.dictation_target = self.dictation.start()
+                self._dictation_checkpoint()
+                self.dictation_target = self.dictation.start(checkpoint=self._dictation_checkpoint)
                 self.log("文章入力モード開始。入力欄を固定しました。Ctrl+Alt+Spaceで話してください")
                 return RunOutcome("completed", "文章入力モードを開始しました")
             if action == "stop":
@@ -1039,15 +1051,22 @@ class VoicePilotApp:
                 return RunOutcome("completed", "文章入力モードは有効です")
             if action == "empty":
                 return RunOutcome("no_speech", "入力する内容がありません")
-            if self.stop_event.is_set():
-                return RunOutcome("interrupted", "入力を中止しました")
+            self._dictation_checkpoint()
             self.restore_target()
-            verified = self.dictation.insert(self.dictation_target, text)
+            self._dictation_checkpoint()
+            verified = self.dictation.insert(
+                self.dictation_target, text, checkpoint=self._dictation_checkpoint)
             # Never log dictated text, private labels, or current editor contents.
             self.log(f"文章入力：{len(text)}文字を挿入しました（内容は記録しません）")
             return RunOutcome("completed" if verified else "unverified",
                               "入力位置へ追記しました" if verified else
                               "文字入力を送信しました。内容は入力先で確認してください")
+        except InterruptedError:
+            self.dictation_target = None
+            return RunOutcome("interrupted", "文章入力を中止しました。送信済みの文字は元に戻せません")
+        except DesktopControlLocked:
+            self.dictation_target = None
+            return RunOutcome("incomplete", "PC操作の許可が失効したため文章入力を停止しました")
         except (DictationError, ValueError, RuntimeError, ConnectionError, TimeoutError) as exc:
             self.log(f"文章入力を停止しました：{str(exc)[:130]}")
             # A changed focus must never silently retarget a different editor.
