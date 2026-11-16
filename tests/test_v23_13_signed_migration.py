@@ -208,7 +208,8 @@ class OfflineSignedMigrationTests(unittest.TestCase):
         target = self.base / "VoicePilot-Signed"
         with patch.object(migration, "_assert_windows_nonadmin"):
             answer, placed = self.verify(destination=target, confirmed=True)
-        self.assertEqual(placed, target)
+        # Windows may spell the same TEMP path using 8.3 short names.
+        self.assertTrue(placed.samefile(target))
         self.assertEqual((placed / "VERSION").read_text().strip(), "0.23.13")
         self.assertIn(self.pub_hex, (placed / "voicepilot_bootstrap.py").read_text())
         self.assertFalse((placed / "user-secret.txt").exists())
