@@ -59,7 +59,10 @@ def compact_for_model(context: dict, instruction: str, *, cloud: bool = False) -
         compact["browser"].pop("document_ref", None)  # Keep page fingerprints away from models.
         required = {str(reference["id"])} if reference.get("source") == "browser" else set()
         compact["browser"]["elements"] = _shortlist(browser.get("elements", []), instruction, 70, required)
-        if cloud and not ("タブ" in instruction or "tab" in instruction.casefold()):
+        if cloud:
+            # A generic request to switch tabs is NOT consent to disclose
+            # titles of every other tab (e.g., private email subjects).
+            # The user may still name the desired tab in the instruction.
             compact["browser"].pop("tabs", None)
     windows = context.get("windows")
     if isinstance(windows, dict):
@@ -67,6 +70,8 @@ def compact_for_model(context: dict, instruction: str, *, cloud: bool = False) -
         compact["windows"].pop("window_ref", None)
         required = {str(reference["id"])} if reference.get("source") == "windows" else set()
         compact["windows"]["controls"] = _shortlist(windows.get("controls", []), instruction, 45, required)
-        if cloud and not ("ウィンドウ" in instruction or "切り替" in instruction):
+        if cloud:
+            # Background app titles may contain document names/credentials.
+            # Never enumerate them in a cloud prompt, including on switches.
             compact["windows"].pop("windows", None)
     return compact
