@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.14: offline owner signing key enrollment and verified candidate ZIP
+
+Adds `scripts/owner_release.py` (available in the source checkout, not shipped inside the app ZIP). `new-key` creates a **password-encrypted Ed25519 PKCS8 private key outside the repository** using exclusive creation, never accepting an existing path or a short passphrase. `prepare` validates an unsigned source ZIP, pins that owner's public key into a temporary copy of the immutable revision-3 bootstrap, constructs a new ZIP and detached `.sig.json`, and verifies the complete result with the independent offline migration verifier before and after placement in a fresh external directory. No network, app execution, existing installation modification, or automated publication.
+
+**Not production signed yet:** no real owner key has been created here and the CI's GitHub Release remains an unsigned prototype. The owner must independently verify/distribute the signer fingerprint and sign an **unpublished** release version; never overwrite a previously published unsigned ZIP under the same tag. See [docs/OWNER_SIGNED_RELEASE.md](docs/OWNER_SIGNED_RELEASE.md). Real Windows hardware acceptance and safe legacy bootstrap migration remain outstanding.
+
 ## v0.23.13: offline signed-release verification and opt-in migration to a separate folder
 
 Adds `python -m app.signed_migration`: an **offline** verifier requiring a developer Ed25519 public key and its SHA-256 fingerprint authenticated independently of GitHub. It checks the detached signature against the exact ZIP bytes, validates Windows-safe archive paths and contents, and refuses a ZIP whose embedded bootstrap pins any different key. The default is verification-only. With explicit `--install-to` and typed `MIGRATE` confirmation, it prepares a **new, nonexistent folder** under a Windows 11 non-admin account; it never upgrades an existing installation in-place, copies secrets, starts the app, installs packages or downloads files.
