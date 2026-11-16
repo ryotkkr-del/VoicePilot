@@ -155,6 +155,9 @@ class PlannerScreenTests(unittest.TestCase):
 class AppIntegrationTests(unittest.TestCase):
     def test_read_only_route_never_invokes_agent_actions(self):
         app = VoicePilotApp.__new__(VoicePilotApp)
+        from app.control_permit import DesktopControlPermit
+        app.control_permit = DesktopControlPermit()
+        app.control_permit.arm()
         app.set_phase = Mock()
         app.restore_target = Mock()
         app.bridge = Mock(connected=False)
