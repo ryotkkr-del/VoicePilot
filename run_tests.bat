@@ -6,6 +6,12 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
+".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)"
+if errorlevel 1 (
+  echo [VoicePilot] テストはPython 3.11の .venv で実行してください。異なる版では結果を判定しません。
+  pause
+  exit /b 1
+)
 ".venv\Scripts\python.exe" -m unittest discover -s tests -v
 if errorlevel 1 goto failure
 where node >nul 2>&1

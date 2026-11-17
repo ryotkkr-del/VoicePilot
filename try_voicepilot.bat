@@ -15,6 +15,13 @@ if not exist ".venv\Scripts\python.exe" (
     exit /b 1
   )
 )
+".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)"
+if errorlevel 1 (
+  echo [VoicePilot] この .venv はPython 3.11ではありません。安全のため試用を開始しません。
+  echo [VoicePilot] 個人データを確認したうえで .venv だけを削除し、Python 3.11で再作成してください。
+  pause
+  exit /b 1
+)
 ".venv\Scripts\python.exe" -c "import numpy, sounddevice, faster_whisper"
 if errorlevel 1 goto ASK_INSTALL
 goto START_TRIAL
