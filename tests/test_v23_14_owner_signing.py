@@ -5,7 +5,9 @@ or modification of the user's existing files.
 """
 from __future__ import annotations
 
+from contextlib import redirect_stderr
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path
 import tempfile
@@ -171,6 +173,15 @@ class OwnerSigningTests(unittest.TestCase):
         self.assertFalse(another.exists())
         with self.assertRaisesRegex(owner_release.OfflineSignerError, "既に"):
             owner_release.generate_encrypted_key(self.key, self.password)
+
+    def test_cli_explains_short_passphrase_without_echoing_it(self):
+        output = StringIO()
+        with patch.object(owner_release.getpass, "getpass", side_effect=["weak", "weak"]), \
+             redirect_stderr(output):
+            code = owner_release.main(["new-key", "--key", str(self.home / "cli-key.pem")])
+        self.assertEqual(code, 2)
+        self.assertIn("16バイト", output.getvalue())
+        self.assertNotIn("weak", output.getvalue())
 
     def test_output_cannot_be_inside_repository(self):
         with self.assertRaisesRegex(owner_release.OfflineSignerError, "リポジトリ"):

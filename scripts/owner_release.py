@@ -270,7 +270,13 @@ def main(argv: list[str] | None = None) -> int:
         print("公開鍵の本人確認はGitHub以外の信頼できる経路で行ってください。")
         print("秘密鍵をGitHubやチャットへ送信しないでください。正式運用は未承認です。")
         return 0
-    except (OfflineSignerError, OSError, ValueError, TypeError, zipfile.BadZipFile) as exc:
+    except OfflineSignerError as exc:
+        # These messages are intentionally authored by this script. They
+        # identify a safe corrective action (for example, a short passphrase)
+        # without ever echoing the passphrase or private-key bytes.
+        print(f"鍵または署名付きZIPの作成を拒否しました: {exc}", file=sys.stderr)
+        return 2
+    except (OSError, ValueError, TypeError, zipfile.BadZipFile):
         print("鍵または署名付きZIPの作成を拒否しました。入力と保存先を確認してください。", file=sys.stderr)
         return 2
 
