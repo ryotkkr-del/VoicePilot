@@ -11,6 +11,7 @@ class TestBridge(unittest.TestCase):
     def test_authenticated_request_response_and_invalid_token(self):
         bridge = BrowserBridge('test-secret', port=18761)
         bridge.start()
+        self.addCleanup(bridge.close)
         self.assertFalse(bridge.error, bridge.error)
 
         async def fake_extension():
@@ -38,7 +39,6 @@ class TestBridge(unittest.TestCase):
         result = bridge.call('snapshot')
         self.assertEqual(result['title'], 'example')
         thread.join(timeout=3)
-
 
 if __name__ == '__main__':
     unittest.main()

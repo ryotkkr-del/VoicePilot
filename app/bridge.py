@@ -33,7 +33,12 @@ class BrowserBridge:
             return
         self._thread = threading.Thread(target=self._serve, daemon=True, name="voicepilot-browser-bridge")
         self._thread.start()
-        self._ready.wait(5)
+        if not self._ready.wait(5):
+            # Do not leave the UI reporting an unexplained "not connected"
+            # state when Windows fails to create the loopback event loop.
+            # The thread is a daemon and no browser action can be dispatched
+            # because ``connected`` remains false.
+            self.error = "Browser bridge did not start within 5 seconds"
 
     def _serve(self) -> None:
         try:

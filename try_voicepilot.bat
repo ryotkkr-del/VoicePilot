@@ -8,12 +8,18 @@ echo.
 if not exist ".venv\Scripts\python.exe" (
   echo [VoicePilot] このフォルダにPython 3.11の仮想環境を作成します。
   echo [VoicePilot] まだネットワーク通信はしません。
-  py -3.11 -m venv .venv
+  py -3.11 -c "import sys" >nul 2>&1
   if errorlevel 1 (
-    echo Python 3.11をインストールしてください: https://www.python.org/downloads/
-    pause
-    exit /b 1
+    if not exist "%LocalAppData%\Programs\Python\Python311\python.exe" (
+      echo Python 3.11をインストールしてください: https://www.python.org/downloads/
+      pause
+      exit /b 1
+    )
+    "%LocalAppData%\Programs\Python\Python311\python.exe" -m venv .venv
+  ) else (
+    py -3.11 -m venv .venv
   )
+  if errorlevel 1 exit /b 1
 )
 ".venv\Scripts\python.exe" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 11) else 1)"
 if errorlevel 1 (

@@ -1,6 +1,7 @@
 # Local runtime and generated files
 .venv/
 venv/
+.verification-*/
 __pycache__/
 *.py[cod]
 .pytest_cache/
