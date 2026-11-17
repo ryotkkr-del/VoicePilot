@@ -6,6 +6,12 @@ VoicePilot is a Windows 11 + Chrome experiment for controlling desktop applicati
 
 > **Prototype warning:** This project has not been verified on a real Windows machine end-to-end. Automated tests passing do not guarantee that browser and desktop actions are reliable or safe. Do not allow unattended operations on sensitive or high-impact data.
 
+## v0.23.22: safer runtime and release-candidate boundaries
+
+VoicePilot now refuses to start, trial, or report test results from a virtual environment other than the supported Python 3.11 runtime. The launchers also fall back to a user-scope Python 3.11 installation when the Windows `py -3.11` launcher cannot find it; they never delete an existing environment automatically.
+
+The loopback Chrome bridge now exposes a startup timeout instead of leaving an ambiguous disconnected state if Windows cannot initialize it. CI no longer publishes unsigned ZIPs as GitHub Releases: it retains only an unsigned release candidate for offline owner signing. A signed candidate remains **not** a production release until its public-key fingerprint is independently authenticated and Windows hardware acceptance is complete.
+
 ## v0.23.21: single-use approval before cloud screen disclosure (P0-3)
 
 The stored Gemini image checkbox is **not** sufficient to upload a screenshot. Each model-initiated screenshot requires a fresh local GUI confirmation, and a captured image is discarded if the foreground window changes or the five-minute desktop permit expires before model dispatch.
