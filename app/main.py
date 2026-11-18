@@ -40,6 +40,7 @@ DEFAULTS = {
     "ollama_model": "gemma3:4b", "whisper_model": "small", "allow_cloud_ui": False,
     "auto_stop": True, "silence_seconds": 1.4, "allow_cloud_image": False,
     "voice_feedback": True, "measure_performance": False,
+    "persistent_browser_file_access": False,
 }
 BG, WHITE, INK = "#F6F7FA", "#FFFFFF", "#19222E"
 MUTED, ACCENT, BORDER = "#64748B", "#2563EB", "#E2E8F0"
@@ -128,7 +129,9 @@ class VoicePilotApp:
         self.root = root
         self.ui = UIDispatcher(root)
         self.config = load_config()
-        # Never persist permission: all process launches begin locked.
+        # Broad desktop control is never persisted: all process launches begin
+        # locked.  A separately configured, narrow browser/file scope is
+        # handled per action by VoiceAgent.
         self.control_permit = DesktopControlPermit()
         self.bridge = BrowserBridge(self.config["token"])
         self.bridge.start()
@@ -346,6 +349,20 @@ class VoicePilotApp:
         tk.Checkbutton(settings,text="Geminiへの画像送信を許可（送信する画像は毎回確認）",
                        variable=self.cloud_image_permission,command=self.save_settings,bg=WHITE,
                        activebackground=WHITE,fg=INK,font=(FONT,9)).pack(anchor="w",pady=(4,0))
+        self.persistent_browser_file_permission = tk.BooleanVar(
+            value=self.config.get("persistent_browser_file_access", False))
+        tk.Checkbutton(
+            settings,
+            text="既に開いているChromeと削除しないファイル操作を常時許可",
+            variable=self.persistent_browser_file_permission,
+            command=self.change_persistent_browser_file_permission,
+            bg=WHITE, fg=INK, activebackground=WHITE, font=(FONT, 9),
+        ).pack(anchor="w", pady=(8, 0))
+        tk.Label(
+            settings,
+            text="ダウンロード開始・送信・フォーム入力・移動・名前変更は毎回確認。削除・内容変更・新規サイトを開く操作は常時許可しません。",
+            bg=WHITE, fg=MUTED, font=(FONT, 8), wraplength=510, justify="left",
+        ).pack(anchor="w", pady=(1, 0))
         tk.Label(settings,text="キーは保存しません。無料枠には回数制限があり、送信データの取扱いに注意してください。",
                  bg=WHITE,fg=MUTED,font=(FONT,8)).pack(anchor="w",pady=(2,0))
         self.performance_diagnostics = tk.BooleanVar(value=self.config.get("measure_performance", False))
@@ -498,10 +515,32 @@ class VoicePilotApp:
                             "allow_cloud_image": self.cloud_image_permission.get(),
                             "auto_stop":self.auto_stop.get(),
                             "voice_feedback":self.voice_feedback.get(),
+                            "persistent_browser_file_access": (
+                                self.persistent_browser_file_permission.get()
+                                if hasattr(self, "persistent_browser_file_permission") else
+                                self.config.get("persistent_browser_file_access", False)),
                             "measure_performance":self.performance_diagnostics.get()
                             if hasattr(self, "performance_diagnostics") else
                             self.config.get("measure_performance", False)})
         save_config(self.config)
+
+    def change_persistent_browser_file_permission(self):
+        """Persist only the user's deliberately narrow, revocable scope."""
+        if self.persistent_browser_file_permission.get() and not messagebox.askyesno(
+                "常時許可の確認 · VoicePilot",
+                "次回起動後も、既に前面にあるChromeの操作と、\n"
+                "安全な形式のファイルの検索・表示・開く・移動・名前変更を許可します。\n\n"
+                "削除、内容変更、新しいサイトを開く操作、アプリの起動、Windowsへの入力は\n"
+                "常時許可されません。ダウンロード開始・送信・フォーム入力・移動・名前変更は\n"
+                "引き続き毎回確認します。\n\n"
+                "この限定した常時許可を有効にしますか？",
+                parent=self.root):
+            self.persistent_browser_file_permission.set(False)
+            self.log("限定した常時許可は有効にしませんでした")
+            return
+        self.save_settings()
+        self._refresh_control_lock_ui()
+        self.log("Chrome・削除しないファイル操作の常時許可を更新しました")
 
     def _start_update_check(self):
         # Prevent even a network check on an unsigned/legacy installation.
@@ -668,6 +707,10 @@ class VoicePilotApp:
             self.control_lock_label.configure(
                 text="● PC操作を一時許可中（最大5分）", fg="#166534")
             self.control_lock_button.configure(text="操作をロック")
+        elif self._persistent_browser_file_access_enabled():
+            self.control_lock_label.configure(
+                text="● Chrome・ファイル操作を常時許可中（限定）", fg="#166534")
+            self.control_lock_button.configure(text="5分間だけ全PC操作を許可")
         else:
             self.control_lock_label.configure(
                 text="● PC操作はロック中", fg="#B91C1C")
@@ -697,8 +740,12 @@ class VoicePilotApp:
         self._refresh_control_lock_ui()
         self.log("PC操作を最大5分間だけ許可しました。停止・終了すると再ロックされます")
 
-    def _control_locked(self) -> bool:
-        if self.control_permit.allowed():
+    def _persistent_browser_file_access_enabled(self) -> bool:
+        return bool(getattr(self, "config", {}).get("persistent_browser_file_access", False))
+
+    def _control_locked(self, *, allow_persistent_browser_file: bool = False) -> bool:
+        if self.control_permit.allowed() or (
+                allow_persistent_browser_file and self._persistent_browser_file_access_enabled()):
             return False
         self.log("PC操作はロック中です。GUIから明示的に許可してください")
         self._refresh_control_lock_ui()
@@ -917,6 +964,7 @@ class VoicePilotApp:
                 "gemini_model":self.config.get("gemini_model","gemini-2.5-flash"),
                 "whisper_model":self.whisper.get(),"allow_cloud_ui":self.cloud_permission.get(),
                 "allow_cloud_image":self.cloud_image_permission.get(),
+                "persistent_browser_file_access": self._persistent_browser_file_access_enabled(),
                 "measure_performance": bool(self.config.get("measure_performance", False))}
 
     def transcribe_then_execute(self,samples,runtime,handsfree_utterance=False,
@@ -1135,7 +1183,9 @@ class VoicePilotApp:
 
     def send_text(self):
         if self.busy or self.recording:return
-        if self._control_locked():
+        # The worker still enforces scope per action.  This only lets text
+        # commands reach that worker when the user enabled the narrow scope.
+        if self._control_locked(allow_persistent_browser_file=True):
             return
         command=self.command.get().strip()
         if not command:
@@ -1282,7 +1332,8 @@ class VoicePilotApp:
                                   self._apply_phase()))
 
     def _run_agent(self,command,runtime,autonomous=False):
-        if not self.control_permit.allowed():
+        if (not self.control_permit.allowed() and
+                not runtime.get("persistent_browser_file_access", False)):
             return RunOutcome("incomplete", "PC操作はロック中です。GUIで明示的に許可してください")
         self.set_phase("acting")
         addressed = extract_chatgpt_request(command)
@@ -1333,7 +1384,9 @@ class VoicePilotApp:
                              max_steps=(28 if autonomous else 12),
                              session=self.session,allow_cloud_image=runtime["allow_cloud_image"],
                              action_gate=gate, autonomous=autonomous,
-                             control_permit=self.control_permit)
+                             control_permit=self.control_permit,
+                             persistent_browser_file_access=runtime.get(
+                                 "persistent_browser_file_access", False))
             return agent.run(command)
         finally:
             # The regular microphone must not resume until this monitor has

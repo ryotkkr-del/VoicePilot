@@ -26,6 +26,16 @@ from .task_policy import LongTaskLimits, TaskProgress, EFFECTFUL_ACTIONS, requir
 # An LLM decision or approval dialog can outlive the original target.
 FOREGROUND_BOUND = frozenset({"windows_hotkey", "windows_scroll", "windows_type"})
 
+# This is deliberately narrower than the normal five-minute desktop permit.
+# It never opens a new web destination, launches an application, types into a
+# Windows window, captures the screen, deletes data, or edits file contents.
+# Browser actions additionally require Chrome to still be the foreground app.
+PERSISTENT_BROWSER_FILE_ACTIONS = frozenset({
+    "browser_click", "browser_fill", "browser_scroll", "browser_back",
+    "browser_forward", "browser_switch_tab", "files_find", "files_open",
+    "files_show_folder", "files_move", "files_rename",
+})
+
 
 class TargetChangedError(RuntimeError):
     """A pre-dispatch target mismatch: the side effect was never attempted."""
@@ -70,7 +80,8 @@ class VoiceAgent:
                  allow_cloud_ui: bool, stop_event, max_steps: int = 10,
                  session: dict | None = None, allow_cloud_image: bool = False, action_gate=None,
                  autonomous: bool = False, limits: LongTaskLimits | None = None,
-                 control_permit: DesktopControlPermit | None = None):
+                 control_permit: DesktopControlPermit | None = None,
+                 persistent_browser_file_access: bool = False):
         self.bridge, self.windows, self.planner = bridge, windows, planner
         self.log, self.confirm = log, confirm
         self.allow_cloud_ui, self.stop_event = allow_cloud_ui, stop_event
@@ -83,6 +94,7 @@ class VoiceAgent:
         # The GUI supplies a volatile permit. Other embedded/test clients can
         # opt into this gate without changing their existing API contracts.
         self.control_permit = control_permit
+        self.persistent_browser_file_access = bool(persistent_browser_file_access)
         self._frame: ScreenFrame | None = None
         self.session = session if session is not None else {}
         self._found_paths = set(self.session.get("recent_files", []))
@@ -93,6 +105,25 @@ class VoiceAgent:
         if self.stop_event.is_set():
             return False
         return self.action_gate is None or self.action_gate.checkpoint(self.stop_event)
+
+    def _action_permitted(self, action: str) -> bool:
+        """Whether this exact dispatch category may run right now.
+
+        A persisted user choice is intentionally useful only for a small,
+        auditable scope.  It is not a substitute for the volatile desktop
+        permit and never expands when a new action is added elsewhere.
+        """
+        if self.control_permit is None or self.control_permit.allowed():
+            return True
+        return (self.persistent_browser_file_access and
+                action in PERSISTENT_BROWSER_FILE_ACTIONS)
+
+    def _require_action_permission(self, action: str) -> None:
+        if not self._action_permitted(action):
+            # Preserve the existing failure type and UI wording for every
+            # operation outside the persisted limited scope.
+            assert self.control_permit is not None
+            self.control_permit.require()
 
     def _finish(self, status: str, summary: str,
                 verified_action: str | None = None) -> RunOutcome:
@@ -201,8 +232,7 @@ class VoiceAgent:
         # This is shared by the fast, reference and AI-planned paths. A
         # revoked/expired GUI permit MUST fail at the *last* dispatch point,
         # not only when a task was initially accepted. No implicit re-arming.
-        if self.control_permit is not None:
-            self.control_permit.require()
+        self._require_action_permission(action)
         if not self._may_act():
             raise InterruptedError("停止・一時停止後の操作は実行しません")
         if action in FOREGROUND_BOUND and self._expected_input_hwnd is not None:
@@ -427,7 +457,8 @@ class VoiceAgent:
             return self._finish("interrupted", "操作を中止しました")
         # Refuse before snapshot, browser access or LLM planning: an
         # unarmed first run must not inspect the desktop or send context.
-        if self.control_permit is not None and not self.control_permit.allowed():
+        if (self.control_permit is not None and not self.control_permit.allowed()
+                and not self.persistent_browser_file_access):
             return self._finish("incomplete", "PC操作はロックされています。GUIで明示的に許可してください")
         remember_instruction(self.session, instruction)
         if self._fast_reference(instruction):
@@ -513,6 +544,13 @@ class VoiceAgent:
                 only_action = history[0]["action"] if len(history) == 1 else None
                 return self._finish("completed", "操作結果を確認しました",
                                     verified_action=only_action)
+            # Do this before a confirmation dialog or a screen capture.  The
+            # persisted scope can only reach the explicit browser/file actions
+            # above; everything else still needs the five-minute local permit.
+            if not self._action_permitted(action):
+                return self._finish(
+                    "incomplete",
+                    "この操作は5分間のPC操作許可が必要です。GUIで一時許可してください")
             if action == "screen_observe":
                 if vision_count >= 2:
                     return self._finish("incomplete", "画像観測の上限に達しました。操作対象を特定できませんでした")
