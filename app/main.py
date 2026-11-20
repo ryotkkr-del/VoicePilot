@@ -49,6 +49,22 @@ FONT = "Yu Gothic UI"
 # This is a memory policy, not a reduction in speech recognition quality.
 SPEECH_MODEL_IDLE_SECONDS = 75
 
+PAIRING_GUIDANCE = (
+    "接続手順：①「接続コードをコピー」 ②Chrome右上のパズルアイコンからVoicePilotを開く "
+    "③コードを貼り付けて「接続する」。見つからない場合は chrome://extensions で"
+    "VoicePilotを有効化し、↻ で再読み込みしてください。"
+)
+
+
+def chrome_connection_copy(*, connected: bool, bridge_error: bool) -> tuple[str, str, str]:
+    """Return stable UI text without exposing local bridge exception details."""
+    if bridge_error:
+        return ("● Chrome接続エラー", "Chromeの接続待受を開始できませんでした。"
+                "VoicePilotを閉じて起動し直してください。", "#B91C1C")
+    if connected:
+        return "● Chrome接続中", "Chromeの操作と文章入力を利用できます。", "#15803D"
+    return "○ Chrome未接続", PAIRING_GUIDANCE, MUTED
+
 
 def speech_model_idle_seconds(model_name: str) -> int:
     """Unload very large unused speech models sooner to reduce idle RAM.
@@ -377,8 +393,14 @@ class VoicePilotApp:
         self.settings_card.pack_forget()
         pair=self.card(shell)
         self.pair_card=pair
-        tk.Label(pair,text="Chrome拡張機能",font=(FONT,10,"bold"),bg=WHITE,fg=INK).pack(side="left")
-        self.button(pair,"接続コードをコピー",self.copy_token).pack(side="right")
+        pair_row = tk.Frame(pair, bg=WHITE)
+        pair_row.pack(fill="x")
+        tk.Label(pair_row,text="Chrome拡張機能",font=(FONT,10,"bold"),bg=WHITE,fg=INK).pack(side="left")
+        self.button(pair_row,"接続コードをコピー",self.copy_token).pack(side="right")
+        self.button(pair_row, "手順をコピー", self.copy_pairing_help).pack(side="right", padx=(0, 7))
+        self.pairing_help = tk.Label(pair, text="接続状態を確認しています…", bg=WHITE, fg=MUTED,
+                                     font=(FONT, 8), wraplength=510, justify="left", anchor="w")
+        self.pairing_help.pack(fill="x", pady=(7, 0))
 
         logbar=tk.Frame(shell,bg=BG)
         logbar.pack(fill="x",pady=(12,6))
@@ -490,6 +512,11 @@ class VoicePilotApp:
         self.root.after(60_000, self._clear_expired_pairing_clipboard)
         self.log("接続コードをコピーしました（60秒後にクリップボードから自動消去）")
 
+    def copy_pairing_help(self):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(PAIRING_GUIDANCE)
+        self.log("Chrome接続の手順をコピーしました")
+
     def _clear_expired_pairing_clipboard(self):
         try:
             if self.root.clipboard_get() == self.config["token"]:
@@ -579,16 +606,16 @@ class VoicePilotApp:
             self.log("Chrome拡張の更新確認はできませんでした。操作できない場合は拡張機能を再読み込みしてください。")
 
     def refresh_connection(self):
-        if self.bridge.error:
-            self.conn_label.configure(text="● Chrome接続エラー",fg="#B91C1C")
-        elif self.bridge.connected:
-            self.conn_label.configure(text="● Chrome接続中",fg="#15803D")
+        title, guidance, color = chrome_connection_copy(
+            connected=bool(self.bridge.connected), bridge_error=bool(self.bridge.error))
+        self.conn_label.configure(text=title, fg=color)
+        if hasattr(self, "pairing_help"):
+            self.pairing_help.configure(text=guidance, fg=color if self.bridge.error else MUTED)
+        if self.bridge.connected:
             if not getattr(self, "_extension_version_checked", True):
                 self._extension_version_checked = True
                 threading.Thread(target=self._check_extension_compatibility,
                                  daemon=True, name="voicepilot-extension-compat").start()
-        else:
-            self.conn_label.configure(text="○ Chrome拡張なし（PC操作可）",fg=MUTED)
         self.root.after(2500,self.refresh_connection)
 
     def log(self,text):
