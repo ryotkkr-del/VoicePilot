@@ -147,6 +147,7 @@ class VoicePilotApp:
         self._handsfree_capture = False
         self._interrupt_monitor: VoiceInterruptMonitor | None = None
         self._action_gate: ActionGate | None = None
+        self._duplex_revision: str | None = None
         self._capture_generation = 0
         self._closing = False
         self.session = {"recent_instructions": [], "recent_files": []}  # RAM only; never written to disk
@@ -268,9 +269,9 @@ class VoicePilotApp:
         self.status_hint.pack(fill="x", pady=(8, 0))
         hfrow = tk.Frame(talk, bg=WHITE)
         hfrow.pack(fill="x", pady=(6, 0))
-        self.handsfree_button = self.button(hfrow, "ハンズフリー開始", self.toggle_handsfree)
+        self.handsfree_button = self.button(hfrow, "デュプレックス開始", self.toggle_handsfree)
         self.handsfree_button.pack(side="left")
-        tk.Label(hfrow, text="開始後は声だけで続けて指示（無操作3分で終了）",
+        tk.Label(hfrow, text="実行中も「やっぱり〜」で指示変更（無操作3分で終了）",
                  bg=WHITE, fg=MUTED, font=(FONT, 9)).pack(side="left", padx=(8, 0))
         self.button(row,"小さく表示",self.open_mini).pack(side="right")
         self.abort_button=self.button(row,"■ 停止",self.abort)
@@ -633,13 +634,13 @@ class VoicePilotApp:
         self.long_task_button.configure(state=entry_action_state)
         hf_on = self.handsfree.enabled
         self.handsfree_button.configure(
-            text="■ ハンズフリー終了" if hf_on else "ハンズフリー開始",
+            text="■ デュプレックス終了" if hf_on else "デュプレックス開始",
             bg="#15803D" if hf_on else "#EDF2F7",
             fg=WHITE if hf_on else INK,
             state="normal" if hf_on or not self.busy and not recording else "disabled")
         if hf_on and not recording and not self.busy:
-            hint = "連続待受：声で指示できます／3分無操作で自動終了"
-            self.status_label.configure(text="ハンズフリー待受中", fg="#15803D")
+            hint = "デュプレックス待受：声で指示できます／3分無操作で自動終了"
+            self.status_label.configure(text="デュプレックス待受中", fg="#15803D")
             self.status_hint.configure(text=hint)
         elif hf_on and self.busy:
             gate = getattr(self, "_action_gate", None)
@@ -763,7 +764,7 @@ class VoicePilotApp:
             return
         self.handsfree.start()
         self.stop_event.clear()
-        self.log("ハンズフリー開始。作業中は「待って」「続けて」「やめて」で制御できます")
+        self.log("デュプレックス開始。作業中は「待って」「続けて」「やめて」「やっぱり〜」で制御できます")
         self._apply_phase()
         self._schedule_handsfree_resume()
 
@@ -772,6 +773,7 @@ class VoicePilotApp:
         if not self.handsfree.enabled:
             return
         self.handsfree.stop()
+        self._duplex_revision = None  # never carry an old voice request forward
         monitor = getattr(self, "_interrupt_monitor", None)
         if monitor is not None:
             monitor.request_stop()
@@ -1273,6 +1275,24 @@ class VoicePilotApp:
             next_record = self._record_after_cancel
             self._record_after_cancel = False
             self._apply_phase()
+            replacement = getattr(self, "_duplex_revision", None)
+            handsfree_enabled = getattr(getattr(self, "handsfree", None), "enabled", False)
+            if replacement and not handsfree_enabled:
+                self._duplex_revision = None
+            elif (replacement and handsfree_enabled
+                    and not getattr(self, "_closing", False)):
+                # The old worker has already stopped at an action boundary.
+                # Start exactly one new task with the new user utterance; it
+                # will re-observe the UI and apply normal confirmations again.
+                self._duplex_revision = None
+                self.busy = True
+                self.stop_event.clear()
+                runtime = self.runtime_settings()
+                self.log("音声で指示を変更しました。画面を確認して続けます")
+                self.set_phase("acting")
+                threading.Thread(target=self.run_text_task,
+                                 args=(replacement, runtime), daemon=True).start()
+                return
             if getattr(getattr(self, "handsfree", None), "enabled", False):
                 # Only the finished worker can clear its cancellation flag.
                 self.stop_event.clear()
@@ -1331,6 +1351,20 @@ class VoicePilotApp:
             self.ui.post(lambda: (self.log("音声で中止を要求しました。進行中の操作は完了済みの可能性があります"),
                                   self._apply_phase()))
 
+    def _handle_duplex_revision(self, command: str, gate: ActionGate):
+        """Queue an explicit spoken change after the current worker unwinds."""
+        if self.stop_event.is_set() or getattr(self, "_closing", False):
+            return
+        if not isinstance(command, str) or not command.strip():
+            return
+        self._duplex_revision = command.strip()
+        # This doesn't revoke the user permit: the new request remains subject
+        # to every ordinary confirmation and dispatch-time permission check.
+        self.stop_event.set()
+        gate.resume()
+        self.ui.post(lambda: (self.log("音声で新しい指示を受け付けました。現在の処理を止めます"),
+                              self._apply_phase()))
+
     def _run_agent(self,command,runtime,autonomous=False):
         if (not self.control_permit.allowed() and
                 not runtime.get("persistent_browser_file_access", False)):
@@ -1375,6 +1409,7 @@ class VoicePilotApp:
                 on_intent=lambda intent: self._handle_voice_interrupt(intent, gate),
                 gate=gate,
                 on_error=lambda message: self.log(message),
+                on_revision=lambda command: self._handle_duplex_revision(command, gate),
             )
             self._interrupt_monitor = monitor
             monitor.start()
@@ -1399,6 +1434,7 @@ class VoicePilotApp:
 
     def abort(self, *, keep_record_request=False):
         self.speaker.stop()
+        self._duplex_revision = None
         if not keep_record_request and getattr(getattr(self, "handsfree", None), "enabled", False):
             self.stop_handsfree("停止ボタンでハンズフリーを終了しました")
         if not keep_record_request:

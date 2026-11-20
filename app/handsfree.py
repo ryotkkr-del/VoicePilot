@@ -1,8 +1,8 @@
 """Opt-in, bounded hands-free session state (no audio, Tk or network imports).
 
-This is *sequential* hands-free listening: microphone input is suspended while
-transcribing, executing and speaking. It is deliberately not an always-on wake
-word listener and cannot interpret speech while a task is running.
+This session listens sequentially for normal requests. During an executing task,
+an independent bounded barge-in monitor can pause, cancel, or explicitly replace
+the request. It is deliberately not an always-on wake-word listener.
 """
 from __future__ import annotations
 

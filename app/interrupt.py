@@ -19,6 +19,7 @@ _PAUSE = frozenset({"待って", "ちょっと待って", "少し待って", "�
 _RESUME = frozenset({"続けて", "再開して", "再開", "続行して", "作業を続けて", "続けてください", "そのまま続けて"})
 _CANCEL = frozenset({"やめて", "止めて", "中止して", "ストップ", "キャンセルして", "作業をやめて", "やめてください", "止めてください"})
 _END = frozenset({"ハンズフリー終了", "ハンズフリーを終了して", "ハンズフリーを止めて"})
+_REVISION_PREFIXES = ("やっぱり", "代わりに", "変更して", "方針を変えて", "次は")
 
 
 def interrupt_intent(utterance: str, *, paused: bool = False) -> str | None:
@@ -31,6 +32,25 @@ def interrupt_intent(utterance: str, *, paused: bool = False) -> str | None:
         return "pause"
     if text in _RESUME and paused:
         return "resume"
+    return None
+
+
+def duplex_revision(utterance: str) -> str | None:
+    """Extract an explicit replacement request from a barge-in utterance.
+
+    A free-form background conversation must never become a desktop command.
+    Requiring a complete, user-spoken revision prefix makes the change mode
+    intentional while leaving ordinary pause/cancel phrases to
+    :func:`interrupt_intent`.
+    """
+    text = re.sub(r"[\s、。！!？?．.]+", "", utterance).strip()
+    for prefix in _REVISION_PREFIXES:
+        if text.startswith(prefix):
+            replacement = text[len(prefix):].strip()
+            if 2 <= len(replacement) <= 240:
+                if replacement in _PAUSE | _RESUME | _CANCEL | _END:
+                    return None
+                return replacement
     return None
 
 
@@ -103,12 +123,14 @@ class VoiceInterruptMonitor:
     def __init__(self, recognize: Callable, on_intent: Callable[[str], None],
                  gate: ActionGate, *, mic_factory=Microphone,
                  on_error: Callable[[str], None] | None = None,
+                 on_revision: Callable[[str], None] | None = None,
                  silence: float = 0.8, max_utterance: float = 3.5):
         self._recognize = recognize
         self._on_intent = on_intent
         self._gate = gate
         self._mic_factory = mic_factory
         self._on_error = on_error or (lambda _: None)
+        self._on_revision = on_revision
         self._silence = float(silence)
         self._max_utterance = float(max_utterance)
         self._stop = threading.Event()
@@ -156,6 +178,13 @@ class VoiceInterruptMonitor:
                             self._on_intent(intent)
                             if intent in {"cancel", "end"}:
                                 break
+                        revision = duplex_revision(utterance)
+                        if revision and self._on_revision is not None and not self._stop.is_set():
+                            # A replacement always stops this monitor. The next
+                            # task owns a fresh monitor, avoiding two microphone
+                            # streams and stale speech from the previous task.
+                            self._on_revision(revision)
+                            break
                     except Exception as exc:
                         if not self._stop.is_set():
                             self._on_error("停止音声を認識できませんでした: " + str(exc)[:100])

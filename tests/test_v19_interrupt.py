@@ -2,11 +2,12 @@
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 
-from app.interrupt import interrupt_intent, ActionGate, VoiceInterruptMonitor
+from app.interrupt import (interrupt_intent, duplex_revision, ActionGate,
+                            VoiceInterruptMonitor)
 from app.agent import VoiceAgent
 from app.main import VoicePilotApp
 
@@ -28,6 +29,13 @@ class PhraseTests(unittest.TestCase):
         self.assertEqual(interrupt_intent("続けて", paused=True), "resume")
         self.assertIsNone(interrupt_intent("待って", paused=True))
         self.assertIsNone(interrupt_intent("続きをまとめて", paused=True))
+
+    def test_duplex_revision_requires_an_explicit_prefix(self):
+        self.assertEqual(duplex_revision("やっぱりメモ帳を開いて"), "メモ帳を開いて")
+        self.assertEqual(duplex_revision("代わりに下へスクロールして"), "下へスクロールして")
+        self.assertIsNone(duplex_revision("メモ帳を開いて"))
+        self.assertIsNone(duplex_revision("やっぱり"))
+        self.assertIsNone(duplex_revision("やっぱりやめて"))
 
 
 class GateTests(unittest.TestCase):
@@ -175,6 +183,19 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(called, [])
         self.assertEqual(FakeMic.starts, FakeMic.stops)
 
+    def test_explicit_revision_is_delivered_once_and_stops_monitor(self):
+        gate = ActionGate()
+        revisions = []
+        monitor = VoiceInterruptMonitor(
+            lambda _: "やっぱり下へスクロールして", lambda _: None, gate,
+            mic_factory=FakeMic, on_revision=revisions.append,
+        )
+        monitor.start()
+        time.sleep(0.18)
+        monitor.close()
+        self.assertEqual(revisions, ["下へスクロールして"])
+        self.assertEqual(FakeMic.starts, FakeMic.stops)
+
     def test_missing_device_reports_error_then_exits(self):
         def missing_mic():
             raise OSError("no device")
@@ -228,6 +249,48 @@ class HandsFreeDurationTests(unittest.TestCase):
         self.assertGreaterEqual(a['speech_elapsed'], 0.9)
         self.assertGreaterEqual(a['silence'], 0.6)
         mic._stream = None
+
+
+class DuplexReplacementTests(unittest.TestCase):
+    def test_revision_stops_old_task_without_revoking_permission(self):
+        app = VoicePilotApp.__new__(VoicePilotApp)
+        app.stop_event = threading.Event()
+        app._closing = False
+        app._duplex_revision = None
+        app.ui = Mock()
+        app.log = Mock()
+        app._apply_phase = Mock()
+        app.control_permit = Mock()
+        gate = Mock()
+
+        app._handle_duplex_revision("Chromeで下へスクロールして", gate)
+
+        self.assertEqual(app._duplex_revision, "Chromeで下へスクロールして")
+        self.assertTrue(app.stop_event.is_set())
+        gate.resume.assert_called_once()
+        app.control_permit.revoke.assert_not_called()
+
+    def test_replacement_starts_only_after_old_worker_is_idle(self):
+        app = VoicePilotApp.__new__(VoicePilotApp)
+        app.busy = True
+        app.phase = "acting"
+        app._status_detail = None
+        app._record_after_cancel = False
+        app._duplex_revision = "下へスクロールして"
+        app._closing = False
+        app.handsfree = Mock(enabled=True)
+        app.stop_event = threading.Event()
+        app.ui = type("ImmediateUI", (), {"post": staticmethod(lambda callback: callback())})()
+        app._apply_phase = Mock()
+        app.runtime_settings = Mock(return_value={"provider": "ollama"})
+        app.log = Mock()
+        app.set_phase = Mock()
+        with patch("app.main.threading.Thread") as worker:
+            app.mark_idle("interrupted")
+        self.assertFalse(app.stop_event.is_set())
+        self.assertFalse(app._duplex_revision)
+        self.assertTrue(app.busy)
+        self.assertEqual(worker.call_args.kwargs["args"][0], "下へスクロールして")
 
 
 if __name__ == '__main__':

@@ -193,7 +193,7 @@ Use **長い作業（確認付き）** to explicitly start a longer UI task afte
 - Action confirmations, cancellation, and limited voice feedback
 - **v0.17: explicit voice dictation mode** — place the caret in a supported editor, click "文章入力" or say "文章入力を始めて", then dictate via Ctrl+Alt+Space. Only the selected editor receives literal text. Say "入力終了" to quit. No AI API is used for dictation.
 
-- **v0.18: opt-in sequential hands-free sessions** — click **ハンズフリー開始** once, then speak multiple separate commands without pressing the hotkey each time. The microphone pauses during transcription, UI operations, and SAPI voice feedback, then rearms when quiet. Stop by saying **ハンズフリー終了** or using the stop button. Sessions time out after three minutes without a recognized utterance and do not survive restart. No external voice API, wake-word listener, or extra inference model is required.
+- **Duplex mode: opt-in hands-free sessions** — click **デュプレックス開始** once, then speak multiple separate commands without pressing the hotkey each time. During a task, say **やっぱり〜**, **代わりに〜**, or **変更して〜** followed by a new request to cancel the previous task at a safe boundary and re-plan from the current screen. Every replacement request still uses the normal confirmation and permission checks. Sessions time out after three minutes without a recognized utterance and do not survive restart.
 
 ## Read-only screen understanding (v0.20)
 
@@ -201,16 +201,17 @@ Say **「今の画面を説明して」**, **「このエラーは何？」** or
 
 Default **Ollama uses the local model**. Gemini text sharing requires `allow_cloud_ui`, and a screenshot is **never** sent to Gemini unless the separate `allow_cloud_image` permission is enabled. No screenshots are saved, and ordinary PC commands still use the existing confirmed action path. The answer is shown in the temporary activity log; voice feedback announces that it is available, but does not read private screen text aloud. Windows real-machine validation is still outstanding.
 
-## Hands-free listening (v0.19)
+## Duplex listening
 
-1. Start VoicePilot and click **ハンズフリー開始** (or **連続ON** in the compact view).
+1. Start VoicePilot and click **デュプレックス開始** (or **連続ON** in the compact view).
 2. Speak commands one at a time, leaving a short silence between utterances. The existing local Whisper model converts speech into instructions; existing confirmation rules still apply.
 3. After an action finishes and voice feedback ends, VoicePilot automatically listens for the next utterance. Dictation mode may be used within a hands-free session.
-4. Say **ハンズフリー終了**, click **ハンズフリー終了**, or use **停止** to stop. An inactive session shuts down after 3 minutes.
+4. While an action is in progress, say **「やっぱり［新しい指示］」**, **「代わりに［新しい指示］」**, or **「変更して［新しい指示］」** to change it. VoicePilot stops the old task at its next safe boundary, rechecks the current screen, then handles the replacement as a new request.
+5. Say **ハンズフリー終了**, click **デュプレックス終了**, or use **停止** to stop. An inactive session shuts down after 3 minutes.
 
-**v0.19: Voice interruption during PC tasks.** While an explicitly enabled hands-free task is executing, a separate local microphone listens only for short control phrases: **待って** pauses at the next action boundary, **続けて** resumes, and **やめて** requests cancellation. **ハンズフリー終了** ends listening and cancels. These commands cannot undo already executed actions or force a currently blocking Windows/API call to stop instantly. A pause times out after 120 seconds. `Ctrl+Alt+Esc` remains an immediate keyboard fallback.
+**Voice interruption during PC tasks.** While an explicitly enabled duplex task is executing, a separate local microphone listens for short control phrases: **待って** pauses at the next action boundary, **続けて** resumes, and **やめて** requests cancellation. Explicit change prefixes begin a replacement request; arbitrary surrounding conversation remains ignored. **ハンズフリー終了** ends listening and cancels. These commands cannot undo already executed actions or force a currently blocking Windows/API call to stop instantly. A pause times out after 120 seconds. `Ctrl+Alt+Esc` remains an immediate keyboard fallback.
 
-**Limits:** This is not a continuously listening wake-word assistant. A secondary microphone stream runs only during an opted-in active task, and only recognized whole-phrase controls can affect it. Other spoken words during execution are ignored. The microphone uses bounded audio buffering and a low-cost energy threshold, not a separate learned VAD. It can still detect environmental speech or misrecognize audio; do not rely on it for unattended high-impact actions. For speaker echo protection, listening resumes only after built-in spoken feedback is finished; headphones are recommended when other audio is playing. Physical Windows microphone and application interoperability have not yet been verified.
+**Limits:** This is not a continuously listening wake-word assistant. A secondary microphone stream runs only during an opted-in active task, and only recognized exact control phrases or explicit change-prefix utterances can affect it. Other spoken words during execution are ignored. The microphone uses bounded audio buffering and a low-cost energy threshold, not a separate learned VAD. It can still detect environmental speech or misrecognize audio; do not rely on it for unattended high-impact actions. For speaker echo protection, listening resumes only after built-in spoken feedback is finished; headphones are recommended when other audio is playing. Physical Windows microphone and application interoperability have not yet been verified.
 
 ## Voice typing (v0.17)
 
